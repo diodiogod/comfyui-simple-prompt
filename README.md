@@ -1,4 +1,9 @@
 # ComfyUI Simple Prompt
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/401bd9f1-045e-4840-8bc7-683020461fa3"
+       alt="image"
+       width="480" />
+</p>
 
 A focused ComfyUI custom node for writing positive and negative prompts as strings and keeping a permanent, searchable prompt library.
 
