@@ -1,0 +1,9 @@
+[project]
+name = "comfyui-simple-prompt"
+version = "0.1.0"
+description = "Standalone Simple Prompt custom node for ComfyUI with persistent searchable history."
+license = "MIT"
+requires-python = ">=3.10"
+
+[project.urls]
+Repository = "https://github.com/diodiogod/comfyui-simple-prompt"
