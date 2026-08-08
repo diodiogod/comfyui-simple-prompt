@@ -319,13 +319,14 @@ window.addEventListener('storage', function(ev){
     }catch(_){ return Array.isArray(items) ? items : []; }
   }
   // --- 1) apiList: your async style, with `objects:true`
-  async function apiList(node, searchQuery){
+  async function apiList(node, searchQuery, searchScope){
     const body = {
       history_path: getHistoryPath(node),
       objects: true,
     };
     if (searchQuery) {
       body.search_query = String(searchQuery).trim();
+      body.search_scope = searchScope || 'all';
     }
     const r = await fetch('/simple_prompt/history/list', {
       method: 'POST',
@@ -451,6 +452,19 @@ window.addEventListener('storage', function(ev){
       '  background:var(--pg-hist-input-bg);color:var(--pg-hist-text);border-radius:8px;outline:none;}',
       '.pg-hist-filter::placeholder{opacity:.6;}',
       '.pg-hist-filter:focus{box-shadow:0 0 0 2px rgba(255,255,255,.08) inset;border-color:#666;}',
+      '.pg-hist-view-toggle{flex:0 0 auto;padding:6px 9px;border:1px solid var(--pg-hist-border);background:var(--pg-hist-input-bg);color:var(--pg-hist-text);border-radius:8px;cursor:pointer;font-size:12px;white-space:nowrap;}',
+      '.pg-hist-view-toggle:hover{filter:brightness(1.08);}',
+      '.pg-hist-view-toggle[aria-pressed="true"]{border-color:#4db8ff;color:#8fd2ff;}',
+      '.pg-hist-search-tools{display:flex;align-items:center;gap:8px;padding:7px 12px;border-bottom:1px solid var(--pg-hist-border);min-height:30px;flex-wrap:wrap;}',
+      '.pg-hist-scopes{display:flex;gap:2px;padding:2px;background:rgba(0,0,0,.2);border-radius:7px;}',
+      '.pg-hist-scope{border:0;background:transparent;color:var(--pg-hist-text);opacity:.65;padding:4px 7px;border-radius:5px;cursor:pointer;font-size:11px;}',
+      '.pg-hist-scope.active{background:#315f78;color:#fff;opacity:1;}',
+      '.pg-hist-chips{display:flex;gap:5px;flex-wrap:wrap;flex:1;}',
+      '.pg-hist-chip{border:1px solid rgba(77,184,255,.35);background:rgba(77,184,255,.1);color:#b9e4ff;border-radius:999px;padding:3px 7px;cursor:pointer;font-size:11px;}',
+      '.pg-hist-chip.exclude{border-color:rgba(217,139,139,.45);background:rgba(217,139,139,.1);color:#e7aaaa;}',
+      '.pg-hist-suggestion{display:flex;justify-content:space-between;gap:8px;padding:6px 10px;cursor:pointer;border-bottom:1px solid rgba(255,255,255,.05);font-size:13px;}',
+      '.pg-hist-suggestion:hover{background:var(--pg-hist-hover);}',
+      '.pg-hist-suggestion-source{opacity:.5;font-size:10px;text-transform:uppercase;}',
 
       // ===== Body / List =====
       '.pg-hist-body{height:var(--pg-hist-body-maxh);overflow:auto;}',
@@ -468,6 +482,14 @@ window.addEventListener('storage', function(ev){
       '.pg-hist-row-child::before{content:"";position:absolute;left:17px;top:0;width:9px;height:50%;border-left:1px solid rgba(77,184,255,.45);border-bottom:1px solid rgba(77,184,255,.45);}',
       '.pg-hist-row-child.selected::before{border-color:#4db8ff;}',
       '.pg-hist-row-versions{padding:2px 6px;border-radius:999px;background:rgba(77,184,255,.16);color:#8fd2ff;font-weight:600;white-space:nowrap;}',
+      '.pg-hist-row-reveal{margin:4px 12px 7px 34px;padding:5px 8px;border:1px dashed rgba(77,184,255,.4);border-radius:6px;color:#8fd2ff;cursor:pointer;font-size:11px;text-align:center;}',
+      '.pg-hist-diff{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+      '.pg-hist-diff-added{color:#f1d36b;font-weight:600;}',
+      '.pg-hist-diff-removed{color:#d98b8b;text-decoration:line-through;text-decoration-thickness:1px;}',
+      '.pg-hist-diff-arrow{color:#888;padding:0 4px;}',
+      '.pg-hist-diff-label{color:#999;font-size:11px;margin-right:5px;}',
+      '.pg-hist-diff-base{color:#9ab6c7;font-style:italic;}',
+      '.pg-hist-diff-muted{color:#999;font-style:italic;}',
       '.pg-hist-highlight{background-color:#4db8ff;color:#000;font-weight:500;padding:1px 2px;border-radius:2px;}',
       '.pg-hist-empty,.pg-hist-status{padding:10px 12px;opacity:.8;}',
       '.pg-hist-empty-help{padding:10px 12px;opacity:.6;font-size:12px;line-height:1.6;}',
@@ -475,6 +497,10 @@ window.addEventListener('storage', function(ev){
       // ===== Preview Pane =====
       '.pg-hist-preview{border-top:1px solid var(--pg-hist-border);padding:10px 12px;max-height:150px;overflow:auto;background:rgba(0,0,0,0.2);}',
       '.pg-hist-preview-label{font-size:11px;opacity:0.7;margin-bottom:4px;font-weight:500;}',
+      '.pg-hist-preview-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;}',
+      '.pg-hist-match-nav{display:flex;align-items:center;gap:4px;font-size:11px;}',
+      '.pg-hist-match-nav button{border:1px solid var(--pg-hist-border);background:var(--pg-hist-input-bg);color:var(--pg-hist-text);border-radius:5px;cursor:pointer;padding:1px 6px;}',
+      '.pg-hist-highlight.active{outline:2px solid #f1d36b;outline-offset:1px;}',
       '.pg-hist-preview-text{font-size:13px;line-height:1.4;white-space:pre-wrap;word-wrap:break-word;}',
 
       // ===== Footer / Button =====
@@ -513,6 +539,213 @@ window.addEventListener('storage', function(ev){
     return safeText.replace(pattern, '<span class="pg-hist-highlight">$1</span>');
   }
 
+  function _parseSearchQuery(query) {
+    var tokens = [];
+    var rx = /([+-]?)("[^"]+"|\S+)/g;
+    var match;
+    while ((match = rx.exec(String(query || '')))) {
+      var raw = match[0];
+      var operator = match[1] || '';
+      var value = (match[2] || '').replace(/^"|"$/g, '').trim();
+      if (value) tokens.push({ raw: raw, value: value, exclude: operator === '-', required: operator === '+' });
+    }
+    return tokens;
+  }
+
+  function _bestMatchSnippet(source, query) {
+    source = String(source || '');
+    var terms = _parseSearchQuery(query).filter(function(token){ return !token.exclude; });
+    if (!source || !terms.length) return '';
+    var folded = source.toLocaleLowerCase();
+    var candidates = [];
+    terms.forEach(function(token) {
+      var needle = token.value.toLocaleLowerCase();
+      var from = 0;
+      while (needle && candidates.length < 100) {
+        var index = folded.indexOf(needle, from);
+        if (index < 0) break;
+        candidates.push(index);
+        from = index + Math.max(1, needle.length);
+      }
+    });
+    if (!candidates.length) return '';
+    var best = candidates[0];
+    var bestCount = -1;
+    candidates.forEach(function(index) {
+      var start = Math.max(0, index - 55);
+      var end = Math.min(source.length, index + 95);
+      var windowText = folded.slice(start, end);
+      var count = terms.reduce(function(total, token){
+        return total + (windowText.includes(token.value.toLocaleLowerCase()) ? 1 : 0);
+      }, 0);
+      if (count > bestCount) { bestCount = count; best = index; }
+    });
+    var start = Math.max(0, best - 45);
+    var end = Math.min(source.length, best + 105);
+    return (start ? '…' : '') + source.slice(start, end).replace(/\s+/g, ' ') + (end < source.length ? '…' : '');
+  }
+
+  function _diffTokens(text) {
+    return String(text || '').match(/\s+|[^\s]+/g) || [];
+  }
+
+  function _escapeHtml(text) {
+    return String(text || '').replace(/[&<>"']/g, function(ch) {
+      return ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[ch];
+    });
+  }
+
+  function _compactDiffPart(text) {
+    return String(text || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function _renderDiffText(text, query) {
+    return query ? highlightTerms(text, query) : _escapeHtml(text);
+  }
+
+  // Compare adjacent versions and keep only changed phrases in the row.
+  function _diffHtml(newerText, olderText, query) {
+    var newer = _diffTokens(newerText);
+    var older = _diffTokens(olderText);
+    if (!newer.length && !older.length) return '';
+    if (newer.join('') === older.join('')) return '';
+
+    // Keep the UI responsive if an unusually large prompt is compared.
+    if (newer.length > 600 || older.length > 600) {
+      return '<span class="pg-hist-diff-added">' + _renderDiffText(_compactDiffPart(newerText), query) + '</span>';
+    }
+
+    var rows = Array.from({ length: older.length + 1 }, function(){
+      return new Array(newer.length + 1).fill(0);
+    });
+    for (var i = older.length - 1; i >= 0; i--) {
+      for (var j = newer.length - 1; j >= 0; j--) {
+        rows[i][j] = older[i] === newer[j]
+          ? rows[i + 1][j + 1] + 1
+          : Math.max(rows[i + 1][j], rows[i][j + 1]);
+      }
+    }
+
+    var removed = [];
+    var added = [];
+    var oi = 0;
+    var ni = 0;
+    while (oi < older.length && ni < newer.length) {
+      if (older[oi] === newer[ni]) {
+        oi++; ni++;
+      } else if (rows[oi + 1][ni] >= rows[oi][ni + 1]) {
+        removed.push(older[oi++]);
+      } else {
+        added.push(newer[ni++]);
+      }
+    }
+    while (oi < older.length) removed.push(older[oi++]);
+    while (ni < newer.length) added.push(newer[ni++]);
+
+    var removedText = _compactDiffPart(removed.join(' '));
+    var addedText = _compactDiffPart(added.join(' '));
+    if (!removedText && !addedText) return '';
+    var html = '';
+    if (addedText) html += '<span class="pg-hist-diff-added">' + _renderDiffText(addedText, query) + '</span>';
+    if (removedText && addedText) html += '<span class="pg-hist-diff-arrow">→</span>';
+    if (removedText) html += '<span class="pg-hist-diff-removed">' + _renderDiffText(removedText, query) + '</span>';
+    return html;
+  }
+
+  function _variationDiffHtml(item, older, query) {
+    if (!older) return '<span class="pg-hist-diff-base">Base prompt</span>';
+    var positive = _diffHtml(item.positive, older.positive, query);
+    var negative = _diffHtml(item.negative, older.negative, query);
+    if (!positive && !negative) return '<span class="pg-hist-diff-muted">No visible text change</span>';
+    var html = '';
+    if (positive) html += '<span class="pg-hist-diff-label">Positive</span>' + positive;
+    if (negative) {
+      if (html) html += '<span class="pg-hist-diff-arrow">·</span>';
+      html += '<span class="pg-hist-diff-label">Negative</span>' + negative;
+    }
+    return html;
+  }
+
+  function _variationDate(label) {
+    var value = String(label || '');
+    var separator = value.indexOf(' — ');
+    return separator >= 0 ? value.slice(0, separator) : '';
+  }
+
+  function _variationBody(label) {
+    var value = String(label || '');
+    var separator = value.indexOf(' — ');
+    return separator >= 0 ? value.slice(separator + 3) : value;
+  }
+
+  function _searchMatchSnippetHtml(item, query) {
+    if (!query) return '';
+    var source = item.matched_text || [item.positive || '', item.negative || ''].filter(Boolean).join(' --- ');
+    var snippet = _bestMatchSnippet(source, query);
+    if (!snippet) return '';
+    return '<span class="pg-hist-diff-arrow">·</span><span class="pg-hist-diff-label">Match</span>'
+      + highlightTerms(snippet, query);
+  }
+
+  function _inlineDiffHtml(newerText, olderText, query) {
+    var newer = _diffTokens(newerText);
+    var older = _diffTokens(olderText);
+    if (newer.length > 600 || older.length > 600) return _renderDiffText(newerText, query);
+
+    var rows = Array.from({ length: older.length + 1 }, function(){
+      return new Array(newer.length + 1).fill(0);
+    });
+    for (var i = older.length - 1; i >= 0; i--) {
+      for (var j = newer.length - 1; j >= 0; j--) {
+        rows[i][j] = older[i] === newer[j]
+          ? rows[i + 1][j + 1] + 1
+          : Math.max(rows[i + 1][j], rows[i][j + 1]);
+      }
+    }
+
+    var runs = [];
+    function appendRun(type, text) {
+      var last = runs[runs.length - 1];
+      if (last && last.type === type) last.text += text;
+      else runs.push({ type: type, text: text });
+    }
+    var oi = 0;
+    var ni = 0;
+    while (oi < older.length && ni < newer.length) {
+      if (older[oi] === newer[ni]) {
+        appendRun('same', newer[ni]);
+        oi++; ni++;
+      } else if (rows[oi + 1][ni] >= rows[oi][ni + 1]) {
+        appendRun('removed', older[oi++]);
+      } else {
+        appendRun('added', newer[ni++]);
+      }
+    }
+    while (oi < older.length) {
+      appendRun('removed', older[oi++]);
+    }
+    while (ni < newer.length) {
+      appendRun('added', newer[ni++]);
+    }
+    var html = runs.map(function(run) {
+      var content = _renderDiffText(run.text, query);
+      if (run.type === 'added') return '<span class="pg-hist-diff-added">' + content + '</span>';
+      if (run.type === 'removed') return '<span class="pg-hist-diff-removed">' + content + '</span>';
+      return content;
+    }).join('');
+    return html || '<span class="pg-hist-diff-muted">(empty)</span>';
+  }
+
+  function _inlineReviewHtml(item, older, query) {
+    var html = '<span class="pg-hist-diff-label">Positive</span><br>'
+      + _inlineDiffHtml(item.positive || '', older.positive || '', query);
+    if (item.negative || older.negative) {
+      html += '<br><span class="pg-hist-diff-label">Negative</span><br>'
+        + _inlineDiffHtml(item.negative || '', older.negative || '', query);
+    }
+    return html;
+  }
+
   function openPanelUI(node){
     // overlay & chrome
     var overlay = document.createElement('div'); overlay.className = 'pg-hist-overlay';
@@ -524,9 +757,16 @@ window.addEventListener('storage', function(ev){
     var status  = document.createElement('div'); status.className  = 'pg-hist-status'; status.textContent = 'Loading…';
 
     // Preview pane structure
+    var previewHead = document.createElement('div'); previewHead.className = 'pg-hist-preview-head';
     var previewLabel = document.createElement('div'); previewLabel.className = 'pg-hist-preview-label'; previewLabel.textContent = 'Preview:';
+    var matchNav = document.createElement('div'); matchNav.className = 'pg-hist-match-nav'; matchNav.style.display = 'none';
+    var matchPrev = document.createElement('button'); matchPrev.type = 'button'; matchPrev.textContent = '‹';
+    var matchCount = document.createElement('span');
+    var matchNext = document.createElement('button'); matchNext.type = 'button'; matchNext.textContent = '›';
+    matchNav.appendChild(matchPrev); matchNav.appendChild(matchCount); matchNav.appendChild(matchNext);
+    previewHead.appendChild(previewLabel); previewHead.appendChild(matchNav);
     var previewText = document.createElement('div'); previewText.className = 'pg-hist-preview-text';
-    preview.appendChild(previewLabel);
+    preview.appendChild(previewHead);
     preview.appendChild(previewText);
 
     // header: title + filter (no close button)
@@ -562,6 +802,25 @@ window.addEventListener('storage', function(ev){
     filterWrapper.appendChild(filter);
     filterWrapper.appendChild(searchHistoryDropdown);
 
+    var showDiff = true;
+    try { showDiff = sessionStorage.getItem('simple_prompt_history_view') !== 'prompt'; } catch(_){ }
+    var viewToggle = document.createElement('button');
+    viewToggle.type = 'button';
+    viewToggle.className = 'pg-hist-view-toggle';
+    viewToggle.setAttribute('aria-pressed', String(showDiff));
+    viewToggle.title = 'Switch between variation changes and prompt text';
+    function updateViewToggle(){
+      viewToggle.textContent = showDiff ? 'Changes' : 'Prompt';
+      viewToggle.setAttribute('aria-pressed', String(showDiff));
+    }
+    updateViewToggle();
+    viewToggle.onclick = function(){
+      showDiff = !showDiff;
+      try { sessionStorage.setItem('simple_prompt_history_view', showDiff ? 'changes' : 'prompt'); } catch(_){ }
+      updateViewToggle();
+      renderList();
+    };
+
     // destroy helper
     function destroy(){
       // Save search history when closing popup
@@ -579,6 +838,28 @@ window.addEventListener('storage', function(ev){
     card.addEventListener('click', function(ev){ ev.stopPropagation(); });
     header.appendChild(title);
     header.appendChild(filterWrapper);
+    header.appendChild(viewToggle);
+
+    var searchTools = document.createElement('div'); searchTools.className = 'pg-hist-search-tools';
+    var scopes = document.createElement('div'); scopes.className = 'pg-hist-scopes';
+    var chips = document.createElement('div'); chips.className = 'pg-hist-chips';
+    var searchScope = 'all';
+    try { searchScope = sessionStorage.getItem('simple_prompt_search_scope') || 'all'; } catch(_){ }
+    ['all', 'current', 'added', 'removed'].forEach(function(scopeName) {
+      var button = document.createElement('button');
+      button.type = 'button'; button.className = 'pg-hist-scope';
+      button.textContent = scopeName === 'current' ? 'Current text' : scopeName[0].toUpperCase() + scopeName.slice(1);
+      button.dataset.scope = scopeName;
+      button.onclick = function() {
+        searchScope = scopeName;
+        try { sessionStorage.setItem('simple_prompt_search_scope', scopeName); } catch(_){ }
+        Array.from(scopes.children).forEach(function(child){ child.classList.toggle('active', child.dataset.scope === scopeName); });
+        reloadPanel();
+      };
+      button.classList.toggle('active', scopeName === searchScope);
+      scopes.appendChild(button);
+    });
+    searchTools.appendChild(scopes); searchTools.appendChild(chips);
 
     // Search history management
     var SEARCH_HISTORY_KEY = 'simple_prompt_search_history';
@@ -611,25 +892,56 @@ window.addEventListener('storage', function(ev){
       } catch(_) {}
     }
 
-    function showSearchHistoryDropdown() {
-      var history = getSearchHistory();
-      if (!history.length) {
+    var GENERIC_SUGGESTION_WORDS = new Set(('the a an and or of in on at to with for from by is are was were this that photo photograph image high quality detailed highly ultra realistic cinematic camera shot lens lighting portrait masterpiece best resolution 4k 8k').split(' '));
+
+    function localSuggestions() {
+      var typed = filter.value.trim().toLocaleLowerCase();
+      var values = [];
+      var seen = new Set();
+      function add(value, source, score) {
+        value = String(value || '').trim();
+        var folded = value.toLocaleLowerCase();
+        if (!value || seen.has(folded) || (typed && folded === typed)) return;
+        if (typed && !folded.includes(typed) && !folded.split(/\s+/).some(function(part){ return part.startsWith(typed.split(/\s+/).pop()); })) return;
+        seen.add(folded); values.push({ value: value, source: source, score: score || 0 });
+      }
+      getSearchHistory().forEach(function(value, index){ add(value, 'recent', 100 - index); });
+      var counts = new Map();
+      var typedTerms = _parseSearchQuery(typed).filter(function(token){ return !token.exclude; }).map(function(token){ return token.value; });
+      (libraryItems || []).forEach(function(item) {
+        if (item.custom_name) add(item.custom_name, 'name', 90);
+        var text = ((item.positive || '') + ' ' + (item.negative || '')).toLocaleLowerCase();
+        var hasContext = !typedTerms.length || typedTerms.every(function(term){ return text.includes(term); });
+        if (!hasContext) return;
+        var unique = new Set(text.match(/[\p{L}\p{N}][\p{L}\p{N}'-]{3,}/gu) || []);
+        unique.forEach(function(word) {
+          if (!GENERIC_SUGGESTION_WORDS.has(word)) counts.set(word, (counts.get(word) || 0) + 1);
+        });
+      });
+      Array.from(counts.entries()).sort(function(a,b){ return b[1] - a[1]; }).slice(0, 30).forEach(function(pair){
+        if (typedTerms.some(function(term){ return term.toLocaleLowerCase() === pair[0]; })) return;
+        var suggestion = typedTerms.length ? filter.value.trim() + ' ' + pair[0] : pair[0];
+        add(suggestion, typedTerms.length ? 'paired' : 'frequent', 40 + pair[1]);
+      });
+      return values.sort(function(a,b){ return b.score - a.score; }).slice(0, 8);
+    }
+
+    function showSearchSuggestions() {
+      var suggestions = localSuggestions();
+      if (!suggestions.length) {
         searchHistoryDropdown.style.display = 'none';
         return;
       }
 
       searchHistoryDropdown.innerHTML = '';
-      history.forEach(function(query) {
+      suggestions.forEach(function(suggestion) {
         var item = document.createElement('div');
-        item.textContent = query;
-        item.style.padding = '6px 10px';
-        item.style.cursor = 'pointer';
-        item.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
-        item.style.fontSize = '13px';
-        item.onmouseover = function() { item.style.background = 'var(--pg-hist-hover)'; };
-        item.onmouseout = function() { item.style.background = ''; };
+        item.className = 'pg-hist-suggestion';
+        var value = document.createElement('span'); value.textContent = suggestion.value;
+        var source = document.createElement('span'); source.className = 'pg-hist-suggestion-source'; source.textContent = suggestion.source;
+        item.appendChild(value); item.appendChild(source);
         item.onclick = function() {
-          filter.value = query;
+          filter.value = suggestion.value;
           searchHistoryDropdown.style.display = 'none';
           filter.dispatchEvent(new Event('input'));
           filter.focus();
@@ -646,9 +958,7 @@ window.addEventListener('storage', function(ev){
 
     // Show dropdown on click (not focus, to avoid auto-opening)
     filter.addEventListener('click', function() {
-      if (!filter.value.trim()) {
-        showSearchHistoryDropdown();
-      }
+      showSearchSuggestions();
     });
 
     // Hide dropdown on blur (with delay to allow clicks)
@@ -656,9 +966,8 @@ window.addEventListener('storage', function(ev){
       setTimeout(hideSearchHistoryDropdown, 200);
     });
 
-    // Hide dropdown when typing
     filter.addEventListener('input', function() {
-      hideSearchHistoryDropdown();
+      showSearchSuggestions();
     });
 
     // footer: Use button + New Prompt button
@@ -699,6 +1008,7 @@ window.addEventListener('storage', function(ev){
 
     // assemble
     card.appendChild(header);
+    card.appendChild(searchTools);
     card.appendChild(body);
     card.appendChild(preview);
     card.appendChild(footer);
@@ -708,31 +1018,75 @@ window.addEventListener('storage', function(ev){
 
     // data & rendering
     var allItems = [];
+    var libraryItems = [];
     var listEl = null;
     var selectedRowIndex = -1;
     var allRows = [];
     var filtered = [];
     var expandedGroups = new Set();
+    var revealAllGroups = new Set();
     var refreshSerial = 0;
     var lastListSignature = null;
     var lastServerRevision = null;
+    var previewMatchIndex = 0;
+
+    function updatePreviewMatchNav(nextIndex) {
+      var matches = Array.from(previewText.querySelectorAll('.pg-hist-highlight'));
+      matches.forEach(function(match){ match.classList.remove('active'); });
+      if (!matches.length) {
+        matchNav.style.display = 'none';
+        previewMatchIndex = 0;
+        return;
+      }
+      previewMatchIndex = ((typeof nextIndex === 'number' ? nextIndex : 0) + matches.length) % matches.length;
+      matches[previewMatchIndex].classList.add('active');
+      matchCount.textContent = (previewMatchIndex + 1) + ' of ' + matches.length + ' matches';
+      matchNav.style.display = 'flex';
+      matches[previewMatchIndex].scrollIntoView({ block: 'nearest' });
+    }
+    matchPrev.onclick = function(){ updatePreviewMatchNav(previewMatchIndex - 1); };
+    matchNext.onclick = function(){ updatePreviewMatchNav(previewMatchIndex + 1); };
 
     function reloadPanel(){
       var serial = ++refreshSerial;
       var q = filter.value.trim();
-      return apiList(node, q).then(function(items){
+      var requests = q
+        ? Promise.all([apiList(node), apiList(node, q, searchScope)])
+        : apiList(node).then(function(items){ return [items, items]; });
+      return requests.then(function(results){
         if (serial !== refreshSerial) return;
-        var nextItems = Array.isArray(items) ? items : [];
-        var signature = q + '\u0000' + JSON.stringify(nextItems.map(function(it){
-          return [it.key_hash, it.last_used_at, it.hits, it.custom_name, it.group_id];
+        libraryItems = Array.isArray(results[0]) ? results[0] : [];
+        var nextItems = Array.isArray(results[1]) ? results[1] : [];
+        var signature = searchScope + '\u0000' + q + '\u0000' + JSON.stringify(nextItems.map(function(it){
+          return [it.key_hash, it.last_used_at, it.hits, it.custom_name, it.group_id, it.search_score];
         }));
         if (signature === lastListSignature) return;
         lastListSignature = signature;
         allItems = nextItems;
+        renderQueryChips();
         renderList();
         try { status.style.display = 'none'; } catch(_){ }
       }).catch(function(e){
         if (serial === refreshSerial) status.textContent = 'Error: ' + ((e && e.message) || String(e));
+      });
+    }
+
+    function renderQueryChips() {
+      chips.innerHTML = '';
+      _parseSearchQuery(filter.value).forEach(function(token) {
+        var chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'pg-hist-chip' + (token.exclude ? ' exclude' : '');
+        chip.textContent = (token.exclude ? 'exclude: ' : '') + token.value + ' ×';
+        chip.title = 'Remove this search term';
+        chip.onclick = function() {
+          var value = filter.value;
+          var index = value.indexOf(token.raw);
+          if (index >= 0) filter.value = (value.slice(0, index) + value.slice(index + token.raw.length)).replace(/\s{2,}/g, ' ').trim();
+          filter.dispatchEvent(new Event('input', { bubbles: true }));
+          filter.focus();
+        };
+        chips.appendChild(chip);
       });
     }
     function historySyncHandler(){ reloadPanel(); }
@@ -766,11 +1120,13 @@ window.addEventListener('storage', function(ev){
       var q = filter.value.trim();
 
       var groups = new Map();
-      allItems.forEach(function(item){
+      libraryItems.forEach(function(item){
         if (!item.group_id) return;
         if (!groups.has(item.group_id)) groups.set(item.group_id, []);
         groups.get(item.group_id).push(item);
       });
+      groups.forEach(function(members){ members.sort(function(a,b){ return (b.last_used_at || 0) - (a.last_used_at || 0); }); });
+      var matchesByHash = new Map(allItems.map(function(item){ return [item.key_hash, item]; }));
       var seenGroups = new Set();
       filtered = [];
       allItems.forEach(function(item){
@@ -778,11 +1134,19 @@ window.addEventListener('storage', function(ev){
         if (members.length > 1) {
           if (seenGroups.has(item.group_id)) return;
           seenGroups.add(item.group_id);
-          filtered.push({ kind: 'group', item: members[0], members: members });
+          var matchingMembers = members.filter(function(member){ return matchesByHash.has(member.key_hash); }).map(function(member){
+            return Object.assign({}, member, matchesByHash.get(member.key_hash));
+          }).sort(function(a,b){ return (b.search_score || 0) - (a.search_score || 0) || (b.last_used_at || 0) - (a.last_used_at || 0); });
+          var representative = q ? matchingMembers[0] : members[0];
+          filtered.push({ kind: 'group', item: representative, members: members, matchingMembers: matchingMembers });
           if (expandedGroups.has(item.group_id)) {
-            members.forEach(function(member){
+            var visibleMembers = q && !revealAllGroups.has(item.group_id) ? matchingMembers : members;
+            visibleMembers.forEach(function(member){
               filtered.push({ kind: 'child', item: member, members: members });
             });
+            if (q && matchingMembers.length < members.length && !revealAllGroups.has(item.group_id)) {
+              filtered.push({ kind: 'reveal', item: representative, members: members, hiddenCount: members.length - matchingMembers.length });
+            }
           }
         } else {
           filtered.push({ kind: 'item', item: item, members: [item] });
@@ -805,7 +1169,7 @@ window.addEventListener('storage', function(ev){
 
       function selectRow(index) {
         var descriptor = filtered[index];
-        if (!descriptor || descriptor.kind === 'group') return;
+        if (!descriptor || descriptor.kind === 'group' || descriptor.kind === 'reveal') return;
         allRows.forEach(function(r) { r.classList.remove('selected'); });
         selectedRowIndex = index;
         var row = allRows[index];
@@ -815,18 +1179,42 @@ window.addEventListener('storage', function(ev){
         selectedItem = item;
         useBtn.disabled = false;
         useBtn.style.opacity = '1';
+        var selectedMemberIndex = descriptor.members.findIndex(function(member){ return member.key_hash === item.key_hash; });
+        var selectedOlder = descriptor.kind === 'child' && selectedMemberIndex >= 0
+          ? descriptor.members[selectedMemberIndex + 1]
+          : null;
         var previewContent = item.positive || '';
         if (item.negative) previewContent += '\n---\n' + item.negative;
-        if (q) previewText.innerHTML = highlightTerms(previewContent || '(empty)', q);
-        else previewText.textContent = previewContent || '(empty)';
+        if (selectedOlder && showDiff) {
+          previewText.innerHTML = _inlineReviewHtml(item, selectedOlder, q);
+        } else if (q) {
+          previewText.innerHTML = highlightTerms(previewContent || '(empty)', q);
+        } else {
+          previewText.textContent = previewContent || '(empty)';
+        }
         preview.style.display = 'block';
+        updatePreviewMatchNav(0);
       }
 
       filtered.forEach(function(descriptor, index){
+        if (descriptor.kind === 'reveal') {
+          var reveal = document.createElement('div'); reveal.className = 'pg-hist-row-reveal';
+          reveal.textContent = 'Show ' + descriptor.hiddenCount + ' other ' + (descriptor.hiddenCount === 1 ? 'version' : 'versions');
+          reveal.onclick = function(){ revealAllGroups.add(descriptor.item.group_id); renderList(); };
+          allRows.push(reveal); listEl.appendChild(reveal); return;
+        }
         var it = descriptor.item;
         var isGroup = descriptor.kind === 'group';
         var lbl = (it && (it.label_short || it)) || '';
         var kh = (it && it.key_hash) || '';
+        var memberIndex = descriptor.members.findIndex(function(member){ return member.key_hash === it.key_hash; });
+        var older = descriptor.kind === 'child' && memberIndex >= 0
+          ? descriptor.members[memberIndex + 1]
+          : null;
+        var diffHtml = descriptor.kind === 'child' ? _variationDiffHtml(it, older, q) : '';
+        if (descriptor.kind === 'child' && q && diffHtml.indexOf('pg-hist-highlight') < 0) {
+          diffHtml += _searchMatchSnippetHtml(it, q);
+        }
         var hits = isGroup
           ? descriptor.members.reduce(function(total, member){ return total + (member.hits || 0); }, 0)
           : ((it && it.hits) || 0);
@@ -837,8 +1225,18 @@ window.addEventListener('storage', function(ev){
           : (descriptor.kind === 'child' ? String(lbl) + '\nRight-click to remove from this group' : String(lbl));
 
         var textSpan = document.createElement('div');
-        textSpan.className = 'pg-hist-row-text';
-        textSpan.textContent = (isGroup ? (expandedGroups.has(it.group_id) ? '▾ ' : '▸ ') : '') + String(lbl);
+        textSpan.className = 'pg-hist-row-text' + (descriptor.kind === 'child' ? ' pg-hist-diff' : '');
+        if (descriptor.kind === 'child') {
+          var dateText = _variationDate(lbl);
+          if (showDiff) {
+            var date = _escapeHtml(dateText);
+            textSpan.innerHTML = (date ? '<span class="pg-hist-diff-label">' + date + ' ·</span>' : '') + diffHtml;
+          } else {
+            textSpan.textContent = (dateText ? dateText + ' · ' : '') + _variationBody(lbl);
+          }
+        } else {
+          textSpan.textContent = (isGroup ? (expandedGroups.has(it.group_id) ? '▾ ' : '▸ ') : '') + String(lbl);
+        }
         row.appendChild(textSpan);
 
         var metaSpan = document.createElement('div');
@@ -850,7 +1248,9 @@ window.addEventListener('storage', function(ev){
         if (isGroup) {
           var versionsSpan = document.createElement('span');
           versionsSpan.className = 'pg-hist-row-versions';
-          versionsSpan.textContent = descriptor.members.length + (descriptor.members.length === 1 ? ' version' : ' versions');
+          versionsSpan.textContent = q
+            ? ((descriptor.matchingMembers || []).length + ' matches · ' + descriptor.members.length + ' versions')
+            : (descriptor.members.length + (descriptor.members.length === 1 ? ' version' : ' versions'));
           metaSpan.appendChild(versionsSpan);
         } else if (q && typeof it.search_score !== 'undefined') {
           var scoreSpan = document.createElement('div');
@@ -908,7 +1308,7 @@ window.addEventListener('storage', function(ev){
       });
 
       if (q) {
-        var firstSelectable = filtered.findIndex(function(item){ return item.kind !== 'group'; });
+        var firstSelectable = filtered.findIndex(function(item){ return item.kind !== 'group' && item.kind !== 'reveal'; });
         if (firstSelectable >= 0) selectRow(firstSelectable);
       }
     }
@@ -934,7 +1334,7 @@ window.addEventListener('storage', function(ev){
       var index = selectedRowIndex;
       for (var tries = 0; tries < allRows.length; tries++) {
         index = (index + direction + allRows.length) % allRows.length;
-        if (filtered[index] && filtered[index].kind !== 'group') {
+        if (filtered[index] && filtered[index].kind !== 'group' && filtered[index].kind !== 'reveal') {
           selectRow(index);
           return;
         }

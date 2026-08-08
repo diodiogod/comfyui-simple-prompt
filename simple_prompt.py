@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import difflib
 import json
 import os
+import re
 import shutil
 import threading
 import time
@@ -379,8 +381,6 @@ def _parse_kh_prefix(value: str) -> str:
 def _search_score(query: str, text: str) -> float:
     if not query or not text:
         return 0.0
-    import re
-
     query_folded = str(query).casefold().strip()
     text_folded = str(text).casefold()
     matches = re.findall(r'([+-]?)"([^"]+)"|([+-]?\S+)', query_folded)
@@ -422,11 +422,55 @@ def _search_score(query: str, text: str) -> float:
     return sum(term_scores) / len(term_scores)
 
 
-def _history_list_items(as_objects: bool = False, search_query: str = ""):
+def _change_texts(newer: Dict[str, Any], older: Optional[Dict[str, Any]]) -> tuple[str, str]:
+    if not older:
+        return "", ""
+
+    added: List[str] = []
+    removed: List[str] = []
+    for field in ("positive", "negative"):
+        newer_tokens = re.findall(r"\S+", str(newer.get(field) or ""))
+        older_tokens = re.findall(r"\S+", str(older.get(field) or ""))
+        matcher = difflib.SequenceMatcher(None, older_tokens, newer_tokens, autojunk=False)
+        for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+            if tag in ("insert", "replace"):
+                added.extend(newer_tokens[new_start:new_end])
+            if tag in ("delete", "replace"):
+                removed.extend(older_tokens[old_start:old_end])
+    return " ".join(added), " ".join(removed)
+
+
+def _history_change_lookup(items: List[Dict[str, Any]]) -> Dict[str, tuple[str, str]]:
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for entry in items:
+        group_id = str(entry.get("group_id") or "").strip()
+        if group_id:
+            groups.setdefault(group_id, []).append(entry)
+
+    changes: Dict[str, tuple[str, str]] = {}
+    for members in groups.values():
+        members.sort(key=lambda item: int(item.get("last_used_at", 0) or 0), reverse=True)
+        for index, entry in enumerate(members):
+            key_hash = str(entry.get("key_hash") or "").strip()
+            older = members[index + 1] if index + 1 < len(members) else None
+            if key_hash:
+                changes[key_hash] = _change_texts(entry, older)
+    return changes
+
+
+def _history_list_items(
+    as_objects: bool = False,
+    search_query: str = "",
+    search_scope: str = "all",
+):
     try:
         hist = _read_history(_DEFAULT_HISTORY_PATH)
         items = hist.get("items", [])
-        scored_items: List[tuple[float, Dict[str, Any], str, str]] = []
+        scored_items: List[tuple[float, Dict[str, Any], str, str, str, str, str]] = []
+        scope = str(search_scope or "all").strip().lower()
+        if scope not in {"all", "current", "added", "removed"}:
+            scope = "all"
+        change_lookup = _history_change_lookup(items)
 
         import time as _t
         months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -446,11 +490,19 @@ def _history_list_items(as_objects: bool = False, search_query: str = ""):
             pos = str(entry.get("positive") or "").strip()
             neg = str(entry.get("negative") or "").strip()
             custom_name = str(entry.get("custom_name") or "").strip()
+            added_text, removed_text = change_lookup.get(kh, ("", ""))
+            current_text = "\n".join(part for part in (custom_name, pos, neg) if part)
+            scope_texts = {
+                "current": current_text,
+                "added": added_text,
+                "removed": removed_text,
+                "all": "\n".join(part for part in (current_text, added_text, removed_text) if part),
+            }
+            matched_text = scope_texts[scope]
 
             clean_query = str(search_query or "").strip()
             if clean_query:
-                searchable_text = "\n".join(part for part in (custom_name, pos, neg) if part)
-                score = _search_score(clean_query, searchable_text)
+                score = _search_score(clean_query, matched_text)
                 if score <= 0.0:
                     continue
                 if custom_name and _search_score(clean_query, custom_name) > 0.0:
@@ -477,15 +529,15 @@ def _history_list_items(as_objects: bool = False, search_query: str = ""):
                 label = ""
             if not label:
                 continue
-            scored_items.append((score, entry, label, kh))
+            scored_items.append((score, entry, label, kh, added_text, removed_text, matched_text))
 
         scored_items.sort(key=lambda item: (-item[0], -int(item[1].get("last_used_at", 0) or 0)))
 
         if not as_objects:
-            return True, [label for _, _, label, _ in scored_items]
+            return True, [label for _, _, label, _, _, _, _ in scored_items]
 
         out = []
-        for score, entry, label, kh in scored_items:
+        for score, entry, label, kh, added_text, removed_text, matched_text in scored_items:
             out.append(
                 {
                     "key_hash": kh,
@@ -498,6 +550,10 @@ def _history_list_items(as_objects: bool = False, search_query: str = ""):
                     "last_used_at": int(entry.get("last_used_at", 0) or 0),
                     "hits": int(entry.get("hits", 0) or 0),
                     "group_id": str(entry.get("group_id") or "").strip(),
+                    "added_text": added_text,
+                    "removed_text": removed_text,
+                    "matched_text": matched_text,
+                    "search_scope": scope,
                 }
             )
         return True, out
@@ -660,8 +716,13 @@ if PromptServer is not None and web is not None:
                 data = {}
             as_objects = bool(data.get("objects"))
             search_query = str(data.get("search_query", "")).strip()
+            search_scope = str(data.get("search_scope", "all")).strip()
             with _HIST_LOCK:
-                ok, res = _history_list_items(as_objects=as_objects, search_query=search_query)
+                ok, res = _history_list_items(
+                    as_objects=as_objects,
+                    search_query=search_query,
+                    search_scope=search_scope,
+                )
             if ok:
                 return web.json_response({"ok": True, "items": res})
             return web.json_response({"ok": False, "error": res})
