@@ -447,7 +447,7 @@ window.addEventListener('storage', function(ev){
       // ===== Header =====
       '.pg-hist-header{display:flex;align-items:center;gap:var(--pg-hist-gap);padding:10px 12px;',
       '  border-bottom:1px solid var(--pg-hist-border);}',
-      '.pg-hist-title{font-weight:500;opacity:.95;}',
+      '.pg-hist-title{font-weight:500;opacity:.95;flex:1;}',
       '.pg-hist-filter{flex:1;min-width:120px;padding:6px 8px;border:1px solid var(--pg-hist-border);',
       '  background:var(--pg-hist-input-bg);color:var(--pg-hist-text);border-radius:8px;outline:none;}',
       '.pg-hist-filter::placeholder{opacity:.6;}',
@@ -455,11 +455,13 @@ window.addEventListener('storage', function(ev){
       '.pg-hist-view-toggle{flex:0 0 auto;padding:6px 9px;border:1px solid var(--pg-hist-border);background:var(--pg-hist-input-bg);color:var(--pg-hist-text);border-radius:8px;cursor:pointer;font-size:12px;white-space:nowrap;}',
       '.pg-hist-view-toggle:hover{filter:brightness(1.08);}',
       '.pg-hist-view-toggle[aria-pressed="true"]{border-color:#4db8ff;color:#8fd2ff;}',
-      '.pg-hist-search-tools{display:flex;align-items:center;gap:8px;padding:7px 12px;border-bottom:1px solid var(--pg-hist-border);min-height:30px;flex-wrap:wrap;}',
+      '.pg-hist-search-tools{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--pg-hist-border);min-height:30px;flex-wrap:wrap;}',
+      '.pg-hist-search-label{font-size:11px;opacity:.65;white-space:nowrap;}',
       '.pg-hist-scopes{display:flex;gap:2px;padding:2px;background:rgba(0,0,0,.2);border-radius:7px;}',
       '.pg-hist-scope{border:0;background:transparent;color:var(--pg-hist-text);opacity:.65;padding:4px 7px;border-radius:5px;cursor:pointer;font-size:11px;}',
       '.pg-hist-scope.active{background:#315f78;color:#fff;opacity:1;}',
-      '.pg-hist-chips{display:flex;gap:5px;flex-wrap:wrap;flex:1;}',
+      '.pg-hist-chips{display:flex;gap:5px;flex-wrap:wrap;flex:0 0 100%;min-height:0;}',
+      '.pg-hist-chips:empty{display:none;}',
       '.pg-hist-chip{border:1px solid rgba(77,184,255,.35);background:rgba(77,184,255,.1);color:#b9e4ff;border-radius:999px;padding:3px 7px;cursor:pointer;font-size:11px;}',
       '.pg-hist-chip.exclude{border-color:rgba(217,139,139,.45);background:rgba(217,139,139,.1);color:#e7aaaa;}',
       '.pg-hist-suggestion{display:flex;justify-content:space-between;gap:8px;padding:6px 10px;cursor:pointer;border-bottom:1px solid rgba(255,255,255,.05);font-size:13px;}',
@@ -769,7 +771,7 @@ window.addEventListener('storage', function(ev){
     preview.appendChild(previewHead);
     preview.appendChild(previewText);
 
-    // header: title + filter (no close button)
+    // Header and search controls are separate so scopes clearly apply to the input.
     var title = document.createElement('div'); title.className = 'pg-hist-title'; title.textContent = 'History';
 
     // Wrapper for filter input + dropdown
@@ -781,7 +783,7 @@ window.addEventListener('storage', function(ev){
     var filter = document.createElement('input');
     filter.type = 'search';
     filter.className = 'pg-hist-filter';
-    filter.placeholder = 'filter…';
+    filter.placeholder = 'Search prompt history…';
     filter.autocapitalize = 'off'; filter.autocomplete = 'off'; filter.spellcheck = false;
 
     // Search history dropdown
@@ -837,18 +839,25 @@ window.addEventListener('storage', function(ev){
     overlay.addEventListener('click', destroy);
     card.addEventListener('click', function(ev){ ev.stopPropagation(); });
     header.appendChild(title);
-    header.appendChild(filterWrapper);
     header.appendChild(viewToggle);
 
     var searchTools = document.createElement('div'); searchTools.className = 'pg-hist-search-tools';
+    var searchLabel = document.createElement('span'); searchLabel.className = 'pg-hist-search-label'; searchLabel.textContent = 'Search in:';
     var scopes = document.createElement('div'); scopes.className = 'pg-hist-scopes';
     var chips = document.createElement('div'); chips.className = 'pg-hist-chips';
     var searchScope = 'all';
     try { searchScope = sessionStorage.getItem('simple_prompt_search_scope') || 'all'; } catch(_){ }
-    ['all', 'current', 'added', 'removed'].forEach(function(scopeName) {
+    // "current" was the old normal-search scope; migrate it to the clearer "all" label.
+    if (searchScope === 'current') searchScope = 'all';
+    ['all', 'added', 'removed'].forEach(function(scopeName) {
       var button = document.createElement('button');
       button.type = 'button'; button.className = 'pg-hist-scope';
-      button.textContent = scopeName === 'current' ? 'Current text' : scopeName[0].toUpperCase() + scopeName.slice(1);
+      button.textContent = scopeName[0].toUpperCase() + scopeName.slice(1);
+      button.title = scopeName === 'all'
+        ? 'Search names and text that exist in each saved prompt'
+        : (scopeName === 'added'
+          ? 'Search text introduced since the previous version'
+          : 'Search text deleted since the previous version');
       button.dataset.scope = scopeName;
       button.onclick = function() {
         searchScope = scopeName;
@@ -859,7 +868,10 @@ window.addEventListener('storage', function(ev){
       button.classList.toggle('active', scopeName === searchScope);
       scopes.appendChild(button);
     });
-    searchTools.appendChild(scopes); searchTools.appendChild(chips);
+    searchTools.appendChild(searchLabel);
+    searchTools.appendChild(scopes);
+    searchTools.appendChild(filterWrapper);
+    searchTools.appendChild(chips);
 
     // Search history management
     var SEARCH_HISTORY_KEY = 'simple_prompt_search_history';

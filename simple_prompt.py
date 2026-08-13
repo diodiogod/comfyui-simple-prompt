@@ -496,7 +496,8 @@ def _history_list_items(
                 "current": current_text,
                 "added": added_text,
                 "removed": removed_text,
-                "all": "\n".join(part for part in (current_text, added_text, removed_text) if part),
+                # Normal library search must only match text that exists in this saved prompt.
+                "all": current_text,
             }
             matched_text = scope_texts[scope]
 
