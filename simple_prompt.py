@@ -173,6 +173,7 @@ def _make_history_record(
     now: int,
     old_entry: Optional[Dict[str, Any]] = None,
     group_id: str = "",
+    lineage_note: str = "",
 ) -> Dict[str, Any]:
     record = {
         "key_hash": key_hash,
@@ -189,8 +190,12 @@ def _make_history_record(
             record["custom_name"] = old_entry["custom_name"]
         if old_entry.get("group_id"):
             record["group_id"] = old_entry["group_id"]
+        if old_entry.get("lineage_note"):
+            record["lineage_note"] = old_entry["lineage_note"]
     if group_id:
         record["group_id"] = group_id
+    if lineage_note:
+        record["lineage_note"] = lineage_note
     return record
 
 
@@ -302,24 +307,58 @@ def expand_choices(text: str, seed: Optional[int] = None) -> str:
             return "".join(chars)
 
 
-def _meaningful_words(text: str) -> set[str]:
+def _meaningful_words(text: str) -> List[str]:
     import re
 
-    return {
+    return [
         word
         for word in re.findall(r"\w+", str(text or "").casefold(), flags=re.UNICODE)
         if len(word) >= 3
+    ]
+
+
+def _lineage_similarity(base_positive: str, positive: str) -> Dict[str, float]:
+    """Measure how much ordered base content survives and how scattered edits are."""
+    base_words = _meaningful_words(base_positive)
+    current_words = _meaningful_words(positive)
+    if not base_words or not current_words:
+        return {"retained": 0.0, "weighted_retained": 0.0, "fragmentation": 1.0}
+
+    matcher = difflib.SequenceMatcher(None, base_words, current_words, autojunk=False)
+    opcodes = matcher.get_opcodes()
+    matched_indexes = {
+        index
+        for tag, base_start, base_end, _, _ in opcodes
+        if tag == "equal"
+        for index in range(base_start, base_end)
+    }
+
+    # Prompt edges often contain reusable quality or camera tags. Content in the
+    # middle carries more weight when deciding whether this is still a variation.
+    def position_weight(index: int) -> float:
+        position = (index + 0.5) / len(base_words)
+        return 0.60 if position < 0.20 or position > 0.80 else 1.25
+
+    total_weight = sum(position_weight(index) for index in range(len(base_words)))
+    retained_weight = sum(position_weight(index) for index in matched_indexes)
+    changed_regions = sum(1 for tag, *_ in opcodes if tag != "equal")
+    possible_regions = max(1, (len(opcodes) + 1) // 2)
+    return {
+        "retained": len(matched_indexes) / len(base_words),
+        "weighted_retained": retained_weight / total_weight,
+        "fragmentation": changed_regions / possible_regions,
     }
 
 
 def _continues_lineage(base_positive: str, positive: str) -> bool:
-    """Only break lineage when almost all meaningful base content disappeared."""
-    base_words = _meaningful_words(base_positive)
-    if not base_words:
+    """Continue behavioral lineage unless the selected prompt was broadly rewritten."""
+    similarity = _lineage_similarity(base_positive, positive)
+    weighted_retained = similarity["weighted_retained"]
+    if weighted_retained >= 0.68:
+        return True
+    if weighted_retained < 0.42:
         return False
-    current_words = _meaningful_words(positive)
-    retained = len(base_words & current_words) / len(base_words)
-    return retained >= 0.20
+    return similarity["retained"] >= 0.50 and similarity["fragmentation"] <= 0.60
 
 
 def _save_history_entry(
@@ -339,11 +378,16 @@ def _save_history_entry(
     now = int(time.time())
     requested_group = str(history_group_id or "").strip()
     base_key = str(history_base_key or "").strip()
-    continue_group = bool(
+    lineage_attempted = bool(
         requested_group
         and base_key
         and key_hash != base_key
-        and _continues_lineage(history_base_positive, positive)
+        and str(history_base_positive or "").strip()
+    )
+    similarity_continues = lineage_attempted and _continues_lineage(history_base_positive, positive)
+    continue_group = bool(
+        lineage_attempted
+        and similarity_continues
     )
 
     with _HIST_LOCK:
@@ -358,7 +402,19 @@ def _save_history_entry(
         idx = _find_by_hash(items, key_hash)
         old_entry = items.pop(idx) if idx >= 0 else None
         group_id = requested_group if continue_group else ""
-        items.insert(0, _make_history_record(key_hash, positive, negative, now, old_entry, group_id))
+        lineage_note = "new_direction" if lineage_attempted and not similarity_continues and old_entry is None else ""
+        items.insert(
+            0,
+            _make_history_record(
+                key_hash,
+                positive,
+                negative,
+                now,
+                old_entry,
+                group_id,
+                lineage_note,
+            ),
+        )
         hist["schema"] = _SCHEMA_VERSION
         hist["items"] = items
         _write_history_atomic(_DEFAULT_HISTORY_PATH, hist)
@@ -368,6 +424,7 @@ def _save_history_entry(
         "key_hash": key_hash,
         "group_id": group_id or str((old_entry or {}).get("group_id") or ""),
         "lineage_continued": continue_group,
+        "lineage_note": lineage_note,
         "total": len(items),
     }
 
@@ -551,6 +608,7 @@ def _history_list_items(
                     "last_used_at": int(entry.get("last_used_at", 0) or 0),
                     "hits": int(entry.get("hits", 0) or 0),
                     "group_id": str(entry.get("group_id") or "").strip(),
+                    "lineage_note": str(entry.get("lineage_note") or "").strip(),
                     "added_text": added_text,
                     "removed_text": removed_text,
                     "matched_text": matched_text,
@@ -596,6 +654,105 @@ def _history_revision() -> str:
         return f"{stat.st_mtime_ns}:{stat.st_size}"
     except FileNotFoundError:
         return "missing"
+
+
+def _history_status_payload() -> Dict[str, Any]:
+    history = _read_history(_DEFAULT_HISTORY_PATH)
+    backup_path = _DEFAULT_HISTORY_PATH + ".bak"
+    backup_healthy = False
+    if os.path.isfile(backup_path):
+        try:
+            _read_history_file(backup_path)
+            backup_healthy = True
+        except Exception:
+            backup_healthy = False
+    try:
+        last_saved_at = int(os.path.getmtime(_DEFAULT_HISTORY_PATH))
+    except OSError:
+        last_saved_at = 0
+    return {
+        "total": len(history.get("items", [])),
+        "last_saved_at": last_saved_at,
+        "backup_healthy": backup_healthy,
+    }
+
+
+def _merge_imported_history(imported: Any) -> Dict[str, int]:
+    if not isinstance(imported, dict) or not isinstance(imported.get("items"), list):
+        raise HistoryStorageError("Import must contain a top-level items list")
+
+    history = _read_history(_DEFAULT_HISTORY_PATH)
+    current_items = [item for item in history.get("items", []) if isinstance(item, dict)]
+    by_hash: Dict[str, Dict[str, Any]] = {}
+    for item in current_items:
+        key_hash = _compute_key_hash(_canonical_core(item))
+        normalized = dict(item)
+        normalized["key_hash"] = key_hash
+        by_hash[key_hash] = normalized
+
+    added = 0
+    updated = 0
+
+    def safe_int(value: Any, fallback: int = 0) -> int:
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return fallback
+
+    for raw in imported["items"]:
+        if not isinstance(raw, dict):
+            continue
+        positive = str(raw.get("positive") or "")
+        negative = str(raw.get("negative") or "")
+        if not positive.strip() and not negative.strip():
+            continue
+        key_hash = _compute_key_hash({"positive": positive, "negative": negative})
+        existing = by_hash.get(key_hash)
+        if existing is None:
+            entry: Dict[str, Any] = {
+                "key_hash": key_hash,
+                "positive": positive,
+                "negative": negative,
+                "created_at": safe_int(raw.get("created_at")),
+                "last_used_at": safe_int(raw.get("last_used_at")),
+                "hits": max(1, safe_int(raw.get("hits"), 1)),
+            }
+            for field in ("custom_name", "group_id", "lineage_note"):
+                value = str(raw.get(field) or "").strip()
+                if value:
+                    entry[field] = value
+            by_hash[key_hash] = entry
+            added += 1
+            continue
+
+        before = dict(existing)
+        imported_created = safe_int(raw.get("created_at"))
+        existing_created = safe_int(existing.get("created_at"))
+        created_values = [value for value in (existing_created, imported_created) if value > 0]
+        existing["created_at"] = min(created_values) if created_values else 0
+        existing["last_used_at"] = max(
+            safe_int(existing.get("last_used_at")),
+            safe_int(raw.get("last_used_at")),
+        )
+        existing["hits"] = max(
+            max(1, safe_int(existing.get("hits"), 1)),
+            max(1, safe_int(raw.get("hits"), 1)),
+        )
+        for field in ("custom_name", "group_id", "lineage_note"):
+            if not existing.get(field) and raw.get(field):
+                existing[field] = str(raw[field]).strip()
+        if existing != before:
+            updated += 1
+
+    merged_items = sorted(
+        by_hash.values(),
+        key=lambda item: int(item.get("last_used_at", 0) or 0),
+        reverse=True,
+    )
+    history["schema"] = _SCHEMA_VERSION
+    history["items"] = merged_items
+    _write_history_atomic(_DEFAULT_HISTORY_PATH, history)
+    return {"added": added, "updated": updated, "total": len(merged_items)}
 
 
 class SimplePromptStandalone:
@@ -708,6 +865,46 @@ if PromptServer is not None and web is not None:
         @routes.post("/simple_prompt/history/revision")
         async def simple_prompt_history_revision(request):
             return web.json_response({"ok": True, "revision": _history_revision()})
+
+        @routes.post("/simple_prompt/history/status")
+        async def simple_prompt_history_status(request):
+            try:
+                with _HIST_LOCK:
+                    payload = _history_status_payload()
+                return web.json_response({"ok": True, **payload})
+            except Exception as ex:
+                return web.json_response({"ok": False, "error": str(ex)}, status=500)
+
+        @routes.post("/simple_prompt/history/export")
+        async def simple_prompt_history_export(request):
+            try:
+                with _HIST_LOCK:
+                    history = _read_history(_DEFAULT_HISTORY_PATH)
+                return web.json_response(
+                    {
+                        "ok": True,
+                        "exported_at": int(time.time()),
+                        "schema": int(history.get("schema", _SCHEMA_VERSION) or _SCHEMA_VERSION),
+                        "items": history.get("items", []),
+                    }
+                )
+            except Exception as ex:
+                return web.json_response({"ok": False, "error": str(ex)}, status=500)
+
+        @routes.post("/simple_prompt/history/import")
+        async def simple_prompt_history_import(request):
+            try:
+                try:
+                    imported = await request.json()
+                except Exception as ex:
+                    raise HistoryStorageError(f"Import is not valid JSON: {ex}") from ex
+                with _HIST_LOCK:
+                    result = _merge_imported_history(imported)
+                return web.json_response({"ok": True, **result})
+            except HistoryStorageError as ex:
+                return web.json_response({"ok": False, "error": str(ex)}, status=400)
+            except Exception as ex:
+                return web.json_response({"ok": False, "error": str(ex)}, status=500)
 
         @routes.post("/simple_prompt/history/list")
         async def simple_prompt_history_list(request):

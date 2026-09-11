@@ -344,6 +344,28 @@ window.addEventListener('storage', function(ev){
     if (!(r.ok && j && j.ok)) throw new Error((j && j.message) || ('HTTP ' + r.status));
     return String(j.revision || 'missing');
   }
+  async function apiHistoryStatus(){
+    const r = await fetch('/simple_prompt/history/status', { method: 'POST' });
+    const j = await r.json().catch(function(){ return null; });
+    if (!(r.ok && j && j.ok)) throw new Error((j && j.error) || ('HTTP ' + r.status));
+    return j;
+  }
+  async function apiExportHistory(){
+    const r = await fetch('/simple_prompt/history/export', { method: 'POST' });
+    const j = await r.json().catch(function(){ return null; });
+    if (!(r.ok && j && j.ok && Array.isArray(j.items))) throw new Error((j && j.error) || ('HTTP ' + r.status));
+    return j;
+  }
+  async function apiImportHistory(payload){
+    const r = await fetch('/simple_prompt/history/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const j = await r.json().catch(function(){ return null; });
+    if (!(r.ok && j && j.ok)) throw new Error((j && j.error) || ('HTTP ' + r.status));
+    return j;
+  }
   async function apiPreview(node, sel) {
     var body = { history_path: getHistoryPath(node), history_select: sel };
     var r = await fetch('/simple_prompt/history/preview', {
@@ -464,6 +486,10 @@ window.addEventListener('storage', function(ev){
       '.pg-hist-chips:empty{display:none;}',
       '.pg-hist-chip{border:1px solid rgba(77,184,255,.35);background:rgba(77,184,255,.1);color:#b9e4ff;border-radius:999px;padding:3px 7px;cursor:pointer;font-size:11px;}',
       '.pg-hist-chip.exclude{border-color:rgba(217,139,139,.45);background:rgba(217,139,139,.1);color:#e7aaaa;}',
+      '.pg-hist-library-bar{display:flex;align-items:center;gap:8px;padding:5px 12px;border-bottom:1px solid var(--pg-hist-border);font-size:11px;}',
+      '.pg-hist-library-status{flex:1;opacity:.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+      '.pg-hist-library-action{border:0;background:transparent;color:#8fd2ff;cursor:pointer;padding:3px 5px;font-size:11px;}',
+      '.pg-hist-library-action:hover{text-decoration:underline;}',
       '.pg-hist-suggestion{display:flex;justify-content:space-between;gap:8px;padding:6px 10px;cursor:pointer;border-bottom:1px solid rgba(255,255,255,.05);font-size:13px;}',
       '.pg-hist-suggestion:hover{background:var(--pg-hist-hover);}',
       '.pg-hist-suggestion-source{opacity:.5;font-size:10px;text-transform:uppercase;}',
@@ -484,6 +510,7 @@ window.addEventListener('storage', function(ev){
       '.pg-hist-row-child::before{content:"";position:absolute;left:17px;top:0;width:9px;height:50%;border-left:1px solid rgba(77,184,255,.45);border-bottom:1px solid rgba(77,184,255,.45);}',
       '.pg-hist-row-child.selected::before{border-color:#4db8ff;}',
       '.pg-hist-row-versions{padding:2px 6px;border-radius:999px;background:rgba(77,184,255,.16);color:#8fd2ff;font-weight:600;white-space:nowrap;}',
+      '.pg-hist-row-note{padding:2px 6px;border-radius:999px;background:rgba(241,211,107,.13);color:#f1d36b;font-weight:600;white-space:nowrap;}',
       '.pg-hist-row-reveal{margin:4px 12px 7px 34px;padding:5px 8px;border:1px dashed rgba(77,184,255,.4);border-radius:6px;color:#8fd2ff;cursor:pointer;font-size:11px;text-align:center;}',
       '.pg-hist-diff{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
       '.pg-hist-diff-added{color:#f1d36b;font-weight:600;}',
@@ -507,6 +534,8 @@ window.addEventListener('storage', function(ev){
 
       // ===== Footer / Button =====
       '.pg-hist-footer{padding:10px 12px;border-top:1px solid var(--pg-hist-border);}',
+      '.pg-hist-btn-row{display:flex;gap:8px;margin-bottom:8px;}',
+      '.pg-hist-btn-row .pg-hist-btn{flex:1;width:auto;}',
       '.pg-hist-btn{display:block;width:100%;padding:6px 10px;border:1px solid var(--pg-hist-border);',
       '  background:var(--pg-hist-input-bg);color:var(--pg-hist-text);border-radius:8px;cursor:pointer;}',
       '.pg-hist-btn:hover{filter:brightness(1.06);}',
@@ -831,6 +860,7 @@ window.addEventListener('storage', function(ev){
         saveSearchHistory(q);
       }
       try { document.removeEventListener('keydown', escHandler); } catch(_){ }
+      try { document.removeEventListener('selectionchange', selectionChangeHandler); } catch(_){ }
       try { window.removeEventListener(PG_HISTORY_SYNC_EVENT, historySyncHandler); } catch(_){ }
       try { clearInterval(panelPoll); } catch(_){ }
       try { overlay.parentNode && overlay.parentNode.removeChild(overlay); } catch(_){ }
@@ -872,6 +902,72 @@ window.addEventListener('storage', function(ev){
     searchTools.appendChild(scopes);
     searchTools.appendChild(filterWrapper);
     searchTools.appendChild(chips);
+
+    var libraryBar = document.createElement('div'); libraryBar.className = 'pg-hist-library-bar';
+    var libraryStatus = document.createElement('div'); libraryStatus.className = 'pg-hist-library-status';
+    libraryStatus.textContent = 'Checking library…';
+    var exportBtn = document.createElement('button'); exportBtn.type = 'button'; exportBtn.className = 'pg-hist-library-action'; exportBtn.textContent = 'Export';
+    var importBtn = document.createElement('button'); importBtn.type = 'button'; importBtn.className = 'pg-hist-library-action'; importBtn.textContent = 'Import';
+    var importInput = document.createElement('input'); importInput.type = 'file'; importInput.accept = '.json,application/json'; importInput.style.display = 'none';
+    libraryBar.appendChild(libraryStatus); libraryBar.appendChild(exportBtn); libraryBar.appendChild(importBtn); libraryBar.appendChild(importInput);
+
+    function refreshLibraryStatus() {
+      apiHistoryStatus().then(function(info) {
+        var saved = info.last_saved_at
+          ? new Date(info.last_saved_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          : 'not saved yet';
+        libraryStatus.textContent = info.total + ' prompts · saved ' + saved + ' · backup ' + (info.backup_healthy ? 'healthy' : 'unavailable');
+      }).catch(function(error) {
+        libraryStatus.textContent = 'Library status unavailable: ' + ((error && error.message) || String(error));
+      });
+    }
+
+    exportBtn.onclick = function() {
+      exportBtn.disabled = true;
+      exportBtn.textContent = 'Exporting…';
+      apiExportHistory().then(function(payload) {
+        var date = new Date();
+        var stamp = date.toISOString().replace(/[:.]/g, '-');
+        var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+        var url = URL.createObjectURL(blob);
+        var link = document.createElement('a');
+        link.href = url; link.download = 'simple-prompt-history-' + stamp + '.json';
+        document.body.appendChild(link); link.click(); link.remove();
+        setTimeout(function(){ URL.revokeObjectURL(url); }, 0);
+      }).catch(function(error) {
+        status.textContent = 'Export failed: ' + ((error && error.message) || String(error));
+        status.style.display = 'block';
+      }).finally(function() {
+        exportBtn.disabled = false;
+        exportBtn.textContent = 'Export';
+      });
+    };
+
+    importBtn.onclick = function() { importInput.click(); };
+    importInput.onchange = function() {
+      var file = importInput.files && importInput.files[0];
+      if (!file) return;
+      if (!confirm('Import merges prompts into the current library and never deletes existing entries. Continue?')) {
+        importInput.value = '';
+        return;
+      }
+      importBtn.disabled = true;
+      importBtn.textContent = 'Importing…';
+      file.text().then(function(text) {
+        return apiImportHistory(JSON.parse(text));
+      }).then(function(result) {
+        libraryStatus.textContent = 'Imported ' + result.added + ' new · updated ' + result.updated + ' · ' + result.total + ' total';
+        publishHistoryChanged({ source: 'import' });
+        return reloadPanel();
+      }).catch(function(error) {
+        status.textContent = 'Import failed: ' + ((error && error.message) || String(error));
+        status.style.display = 'block';
+      }).finally(function() {
+        importInput.value = '';
+        importBtn.disabled = false;
+        importBtn.textContent = 'Import';
+      });
+    };
 
     // Search history management
     var SEARCH_HISTORY_KEY = 'simple_prompt_search_history';
@@ -918,6 +1014,7 @@ window.addEventListener('storage', function(ev){
         seen.add(folded); values.push({ value: value, source: source, score: score || 0 });
       }
       getSearchHistory().forEach(function(value, index){ add(value, 'recent', 100 - index); });
+      var recentCount = values.length;
       var counts = new Map();
       var typedTerms = _parseSearchQuery(typed).filter(function(token){ return !token.exclude; }).map(function(token){ return token.value; });
       (libraryItems || []).forEach(function(item) {
@@ -935,7 +1032,11 @@ window.addEventListener('storage', function(ev){
         var suggestion = typedTerms.length ? filter.value.trim() + ' ' + pair[0] : pair[0];
         add(suggestion, typedTerms.length ? 'paired' : 'frequent', 40 + pair[1]);
       });
-      return values.sort(function(a,b){ return b.score - a.score; }).slice(0, 8);
+      var recentVisible = Math.min(recentCount, 4);
+      var otherVisible = 8 - recentVisible;
+      return values.slice(0, recentVisible).concat(
+        values.slice(recentCount).sort(function(a,b){ return b.score - a.score; }).slice(0, otherVisible)
+      );
     }
 
     function showSearchSuggestions() {
@@ -1006,6 +1107,84 @@ window.addEventListener('storage', function(ev){
       });
     };
 
+    var copyBtn = document.createElement('button');
+    copyBtn.className = 'pg-hist-btn';
+    copyBtn.textContent = 'Copy Positive Prompt';
+    copyBtn.disabled = true;
+    copyBtn.style.opacity = '0.5';
+
+    function copyText(text) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(text);
+      }
+      return new Promise(function(resolve, reject) {
+        var field = document.createElement('textarea');
+        field.value = text;
+        field.style.position = 'fixed';
+        field.style.opacity = '0';
+        document.body.appendChild(field);
+        field.select();
+        try {
+          if (!document.execCommand('copy')) throw new Error('Clipboard copy was rejected');
+          resolve();
+        } catch (error) {
+          reject(error);
+        } finally {
+          field.remove();
+        }
+      });
+    }
+
+    copyBtn.onclick = function(){
+      if (!selectedItem) return;
+      var positive = String(selectedItem.positive || '');
+      copyText(positive).then(function(){
+        copyBtn.textContent = 'Copied Positive Prompt';
+        setTimeout(function(){
+          if (copyBtn) copyBtn.textContent = 'Copy Positive Prompt';
+        }, 1200);
+      }).catch(function(error){
+        status.textContent = 'Copy failed: ' + ((error && error.message) || String(error));
+      });
+    };
+
+    var copySelectionBtn = document.createElement('button');
+    copySelectionBtn.className = 'pg-hist-btn';
+    copySelectionBtn.textContent = 'Copy Selected Text';
+    copySelectionBtn.disabled = true;
+    copySelectionBtn.style.opacity = '0.5';
+    var lastCleanSelection = '';
+
+    function cleanSelectedPreviewText() {
+      var selection = window.getSelection && window.getSelection();
+      if (!selection || selection.isCollapsed || !selection.rangeCount) return '';
+      if (!previewText.contains(selection.anchorNode) || !previewText.contains(selection.focusNode)) return '';
+      var container = document.createElement('div');
+      container.appendChild(selection.getRangeAt(0).cloneContents());
+      container.querySelectorAll('.pg-hist-diff-removed,.pg-hist-diff-label').forEach(function(element){ element.remove(); });
+      container.querySelectorAll('br').forEach(function(br){ br.replaceWith(document.createTextNode('\n')); });
+      return String(container.textContent || '').replace(/\u00a0/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+    }
+
+    function selectionChangeHandler() {
+      lastCleanSelection = cleanSelectedPreviewText();
+      copySelectionBtn.disabled = !lastCleanSelection;
+      copySelectionBtn.style.opacity = lastCleanSelection ? '1' : '0.5';
+    }
+    document.addEventListener('selectionchange', selectionChangeHandler);
+    copySelectionBtn.onmousedown = function(event){ event.preventDefault(); };
+    copySelectionBtn.onclick = function(){
+      if (!lastCleanSelection) return;
+      copyText(lastCleanSelection).then(function(){
+        copySelectionBtn.textContent = 'Copied Selected Text';
+        setTimeout(function(){
+          if (copySelectionBtn) copySelectionBtn.textContent = 'Copy Selected Text';
+        }, 1200);
+      }).catch(function(error){
+        status.textContent = 'Copy failed: ' + ((error && error.message) || String(error));
+      });
+    };
+
     var noneBtn = document.createElement('button');
     noneBtn.className = 'pg-hist-btn';
     noneBtn.textContent = 'New Prompt';
@@ -1015,12 +1194,16 @@ window.addEventListener('storage', function(ev){
       destroy();
     };
 
+    var copyActions = document.createElement('div'); copyActions.className = 'pg-hist-btn-row';
+    copyActions.appendChild(copyBtn); copyActions.appendChild(copySelectionBtn);
     footer.appendChild(useBtn);
+    footer.appendChild(copyActions);
     footer.appendChild(noneBtn);
 
     // assemble
     card.appendChild(header);
     card.appendChild(searchTools);
+    card.appendChild(libraryBar);
     card.appendChild(body);
     card.appendChild(preview);
     card.appendChild(footer);
@@ -1070,8 +1253,9 @@ window.addEventListener('storage', function(ev){
         libraryItems = Array.isArray(results[0]) ? results[0] : [];
         var nextItems = Array.isArray(results[1]) ? results[1] : [];
         var signature = searchScope + '\u0000' + q + '\u0000' + JSON.stringify(nextItems.map(function(it){
-          return [it.key_hash, it.last_used_at, it.hits, it.custom_name, it.group_id, it.search_score];
+          return [it.key_hash, it.last_used_at, it.hits, it.custom_name, it.group_id, it.lineage_note, it.search_score];
         }));
+        refreshLibraryStatus();
         if (signature === lastListSignature) return;
         lastListSignature = signature;
         allItems = nextItems;
@@ -1127,6 +1311,11 @@ window.addEventListener('storage', function(ev){
       selectedItem = null;
       useBtn.disabled = true;
       useBtn.style.opacity = '0.5';
+      copyBtn.disabled = true;
+      copyBtn.style.opacity = '0.5';
+      lastCleanSelection = '';
+      copySelectionBtn.disabled = true;
+      copySelectionBtn.style.opacity = '0.5';
       preview.style.display = 'none';
       allRows = [];
       var q = filter.value.trim();
@@ -1191,6 +1380,11 @@ window.addEventListener('storage', function(ev){
         selectedItem = item;
         useBtn.disabled = false;
         useBtn.style.opacity = '1';
+        copyBtn.disabled = false;
+        copyBtn.style.opacity = '1';
+        lastCleanSelection = '';
+        copySelectionBtn.disabled = true;
+        copySelectionBtn.style.opacity = '0.5';
         var selectedMemberIndex = descriptor.members.findIndex(function(member){ return member.key_hash === item.key_hash; });
         var selectedOlder = descriptor.kind === 'child' && selectedMemberIndex >= 0
           ? descriptor.members[selectedMemberIndex + 1]
@@ -1253,6 +1447,16 @@ window.addEventListener('storage', function(ev){
 
         var metaSpan = document.createElement('div');
         metaSpan.className = 'pg-hist-row-meta';
+        var hasNewDirection = isGroup
+          ? descriptor.members.some(function(member){ return member.lineage_note === 'new_direction'; })
+          : it.lineage_note === 'new_direction';
+        if (hasNewDirection) {
+          var noteSpan = document.createElement('span');
+          noteSpan.className = 'pg-hist-row-note';
+          noteSpan.textContent = 'New direction';
+          noteSpan.title = 'Started separately because the selected prompt was substantially rewritten';
+          metaSpan.appendChild(noteSpan);
+        }
         var hitsSpan = document.createElement('span');
         hitsSpan.className = 'pg-hist-row-hits';
         hitsSpan.textContent = hits + (hits === 1 ? ' use' : ' uses');
@@ -1410,6 +1614,7 @@ window.addEventListener('storage', function(ev){
       filterTimeout = setTimeout(function(){
         var q = filter.value.trim();
         status.textContent = 'Searching…';
+        if (q) saveSearchHistory(q);
         reloadPanel();
       }, 250);
     });

@@ -35,8 +35,11 @@ Prompts are saved only after the node runs as part of a workflow. Merely typing 
 - Tracks exact reuse counts and last-used times.
 - Stores each exact prompt variation separately.
 - Groups consecutive prompt experiments into expandable variation groups.
-- Starts a new variation lineage after `New Prompt` or a substantial prompt replacement.
+- Uses ordered, content-weighted comparison to separate substantial rewrites and marks them as a new direction.
 - Allows a grouped variation to be removed from its group without deleting it.
+- Copies either the complete positive prompt or a clean selection from the change preview.
+- Displays prompt count, last-save time, and backup health in History.
+- Exports the complete library and imports it with additive, duplicate-safe merging.
 
 ## Storage
 
