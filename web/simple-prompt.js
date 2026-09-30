@@ -524,7 +524,9 @@ window.addEventListener('storage', function(ev){
       '.pg-hist-empty-help{padding:10px 12px;opacity:.6;font-size:12px;line-height:1.6;}',
 
       // ===== Preview Pane =====
-      '.pg-hist-preview{border-top:1px solid var(--pg-hist-border);padding:10px 12px;max-height:150px;overflow:auto;background:rgba(0,0,0,0.2);}',
+      '.pg-hist-preview{border-top:1px solid var(--pg-hist-border);padding:10px 12px;max-height:45vh;overflow:auto;background:rgba(0,0,0,0.2);}',
+      '.pg-hist-divider{height:7px;flex-shrink:0;cursor:ns-resize;touch-action:none;background:var(--pg-hist-border);}',
+      '.pg-hist-divider:hover{background:#4db8ff;}',
       '.pg-hist-preview-label{font-size:11px;opacity:0.7;margin-bottom:4px;font-weight:500;}',
       '.pg-hist-preview-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;}',
       '.pg-hist-match-nav{display:flex;align-items:center;gap:4px;font-size:11px;}',
@@ -778,12 +780,34 @@ window.addEventListener('storage', function(ev){
   }
 
   function openPanelUI(node){
+    var browseState = node.__simplePromptBrowseState || {};
     // overlay & chrome
     var overlay = document.createElement('div'); overlay.className = 'pg-hist-overlay';
     var card    = document.createElement('div'); card.className    = 'pg-hist-card';
     var header  = document.createElement('div'); header.className  = 'pg-hist-header';
     var body    = document.createElement('div'); body.className    = 'pg-hist-body';
     var preview = document.createElement('div'); preview.className = 'pg-hist-preview'; preview.style.display = 'none';
+    var divider = document.createElement('div'); divider.className = 'pg-hist-divider'; divider.style.display = 'none';
+    divider.title = 'Drag to resize the preview';
+    var previewHeight = 150;
+    try { previewHeight = Number(sessionStorage.getItem('simple_prompt_preview_height')) || 150; } catch(_){ }
+    function setPreviewHeight(height) {
+      previewHeight = Math.max(70, Math.min(height, window.innerHeight * 0.4));
+      preview.style.height = previewHeight + 'px';
+      body.style.height = Math.max(90, window.innerHeight * 0.42 - (previewHeight - 150)) + 'px';
+    }
+    setPreviewHeight(previewHeight);
+    divider.addEventListener('pointerdown', function(ev) {
+      ev.preventDefault();
+      var startY = ev.clientY;
+      var startHeight = previewHeight;
+      divider.setPointerCapture(ev.pointerId);
+      divider.onpointermove = function(move) { setPreviewHeight(startHeight + startY - move.clientY); };
+      divider.onpointerup = divider.onpointercancel = function() {
+        divider.onpointermove = null;
+        try { sessionStorage.setItem('simple_prompt_preview_height', String(previewHeight)); } catch(_){ }
+      };
+    });
     var footer  = document.createElement('div'); footer.className  = 'pg-hist-footer';
     var status  = document.createElement('div'); status.className  = 'pg-hist-status'; status.textContent = 'Loading…';
 
@@ -854,11 +878,18 @@ window.addEventListener('storage', function(ev){
 
     // destroy helper
     function destroy(){
+      node.__simplePromptBrowseState = {
+        expandedGroups: Array.from(expandedGroups || []),
+        selectedKey: selectedItem && selectedItem.key_hash,
+        scrollTop: body.scrollTop
+      };
       // Save search history when closing popup
       var q = filter.value.trim();
       if (q) {
         saveSearchHistory(q);
       }
+      try { clearTimeout(filterTimeout); } catch(_){ }
+      try { clearTimeout(searchHistorySaveTimeout); } catch(_){ }
       try { document.removeEventListener('keydown', escHandler); } catch(_){ }
       try { document.removeEventListener('selectionchange', selectionChangeHandler); } catch(_){ }
       try { window.removeEventListener(PG_HISTORY_SYNC_EVENT, historySyncHandler); } catch(_){ }
@@ -1006,14 +1037,16 @@ window.addEventListener('storage', function(ev){
       var typed = filter.value.trim().toLocaleLowerCase();
       var values = [];
       var seen = new Set();
-      function add(value, source, score) {
+      function add(value, source, score, keepVisible) {
         value = String(value || '').trim();
         var folded = value.toLocaleLowerCase();
-        if (!value || seen.has(folded) || (typed && folded === typed)) return;
-        if (typed && !folded.includes(typed) && !folded.split(/\s+/).some(function(part){ return part.startsWith(typed.split(/\s+/).pop()); })) return;
+        if (!value || seen.has(folded)) return;
+        if (!keepVisible && typed && folded === typed) return;
+        if (!keepVisible && typed && !folded.includes(typed) && !folded.split(/\s+/).some(function(part){ return part.startsWith(typed.split(/\s+/).pop()); })) return;
         seen.add(folded); values.push({ value: value, source: source, score: score || 0 });
       }
-      getSearchHistory().forEach(function(value, index){ add(value, 'recent', 100 - index); });
+      // Recent searches stay pinned whenever the suggestion menu is explicitly reopened.
+      getSearchHistory().forEach(function(value, index){ add(value, 'recent', 100 - index, true); });
       var recentCount = values.length;
       var counts = new Map();
       var typedTerms = _parseSearchQuery(typed).filter(function(token){ return !token.exclude; }).map(function(token){ return token.value; });
@@ -1080,7 +1113,8 @@ window.addEventListener('storage', function(ev){
     });
 
     filter.addEventListener('input', function() {
-      showSearchSuggestions();
+      // Suggestions are useful on demand, but should not cover results while typing.
+      hideSearchHistoryDropdown();
     });
 
     // footer: Use button + New Prompt button
@@ -1205,6 +1239,7 @@ window.addEventListener('storage', function(ev){
     card.appendChild(searchTools);
     card.appendChild(libraryBar);
     card.appendChild(body);
+    card.appendChild(divider);
     card.appendChild(preview);
     card.appendChild(footer);
     overlay.appendChild(card);
@@ -1218,14 +1253,17 @@ window.addEventListener('storage', function(ev){
     var selectedRowIndex = -1;
     var allRows = [];
     var filtered = [];
-    var expandedGroups = new Set();
+    var expandedGroups = new Set(browseState.expandedGroups || []);
+    var restoreBrowseState = true;
+    var selectRow;
+    var keyboardBrowsing = false;
     var revealAllGroups = new Set();
     var refreshSerial = 0;
     var lastListSignature = null;
     var lastServerRevision = null;
     var previewMatchIndex = 0;
 
-    function updatePreviewMatchNav(nextIndex) {
+    function updatePreviewMatchNav(nextIndex, preventScroll) {
       var matches = Array.from(previewText.querySelectorAll('.pg-hist-highlight'));
       matches.forEach(function(match){ match.classList.remove('active'); });
       if (!matches.length) {
@@ -1237,7 +1275,7 @@ window.addEventListener('storage', function(ev){
       matches[previewMatchIndex].classList.add('active');
       matchCount.textContent = (previewMatchIndex + 1) + ' of ' + matches.length + ' matches';
       matchNav.style.display = 'flex';
-      matches[previewMatchIndex].scrollIntoView({ block: 'nearest' });
+      if (!preventScroll) matches[previewMatchIndex].scrollIntoView({ block: 'nearest' });
     }
     matchPrev.onclick = function(){ updatePreviewMatchNav(previewMatchIndex - 1); };
     matchNext.onclick = function(){ updatePreviewMatchNav(previewMatchIndex + 1); };
@@ -1299,6 +1337,9 @@ window.addEventListener('storage', function(ev){
     var panelPoll = setInterval(checkServerRevision, 1500);
 
     function renderList(){
+      var previousKey = selectedItem && selectedItem.key_hash;
+      var previousScroll = body.scrollTop;
+      var previousPreviewScroll = preview.scrollTop;
       if (!listEl){
         listEl = document.createElement('div'); listEl.className = 'pg-hist-list';
         try { body.removeChild(status); } catch(_){ }
@@ -1317,6 +1358,7 @@ window.addEventListener('storage', function(ev){
       copySelectionBtn.disabled = true;
       copySelectionBtn.style.opacity = '0.5';
       preview.style.display = 'none';
+      divider.style.display = 'none';
       allRows = [];
       var q = filter.value.trim();
 
@@ -1368,15 +1410,21 @@ window.addEventListener('storage', function(ev){
         return;
       }
 
-      function selectRow(index) {
+      selectRow = function(index, preventScroll) {
         var descriptor = filtered[index];
-        if (!descriptor || descriptor.kind === 'group' || descriptor.kind === 'reveal') return;
+        if (!descriptor) return;
         allRows.forEach(function(r) { r.classList.remove('selected'); });
         selectedRowIndex = index;
         var row = allRows[index];
         var item = descriptor.item;
         row.classList.add('selected');
-        row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        if (!preventScroll) row.scrollIntoView({ block: 'nearest' });
+        if (descriptor.kind === 'group' || descriptor.kind === 'reveal') {
+          selectedItem = null;
+          useBtn.disabled = copyBtn.disabled = copySelectionBtn.disabled = true;
+          preview.style.display = divider.style.display = 'none';
+          return;
+        }
         selectedItem = item;
         useBtn.disabled = false;
         useBtn.style.opacity = '1';
@@ -1399,8 +1447,9 @@ window.addEventListener('storage', function(ev){
           previewText.textContent = previewContent || '(empty)';
         }
         preview.style.display = 'block';
-        updatePreviewMatchNav(0);
-      }
+        divider.style.display = 'block';
+        updatePreviewMatchNav(0, preventScroll);
+      };
 
       filtered.forEach(function(descriptor, index){
         if (descriptor.kind === 'reveal') {
@@ -1523,9 +1572,22 @@ window.addEventListener('storage', function(ev){
         listEl.appendChild(row);
       });
 
-      if (q) {
-        var firstSelectable = filtered.findIndex(function(item){ return item.kind !== 'group' && item.kind !== 'reveal'; });
-        if (firstSelectable >= 0) selectRow(firstSelectable);
+      if (restoreBrowseState) {
+        restoreBrowseState = false;
+        var restoredIndex = filtered.findIndex(function(entry) {
+          return entry.kind !== 'group' && entry.kind !== 'reveal' && entry.item.key_hash === browseState.selectedKey;
+        });
+        if (restoredIndex >= 0) selectRow(restoredIndex, true);
+        body.scrollTop = browseState.scrollTop || 0;
+      } else {
+        var previousIndex = filtered.findIndex(function(entry) {
+          return entry.kind !== 'group' && entry.kind !== 'reveal' && entry.item.key_hash === previousKey;
+        });
+        if (previousIndex >= 0) {
+          selectRow(previousIndex, true);
+          preview.scrollTop = previousPreviewScroll;
+        }
+        body.scrollTop = previousScroll;
       }
     }
 
@@ -1547,14 +1609,10 @@ window.addEventListener('storage', function(ev){
     }
     function moveSelection(direction){
       if (!allRows.length) return;
-      var index = selectedRowIndex;
-      for (var tries = 0; tries < allRows.length; tries++) {
-        index = (index + direction + allRows.length) % allRows.length;
-        if (filtered[index] && filtered[index].kind !== 'group' && filtered[index].kind !== 'reveal') {
-          selectRow(index);
-          return;
-        }
-      }
+      keyboardBrowsing = true;
+      var index = selectedRowIndex < 0 ? (direction > 0 ? 0 : allRows.length - 1)
+        : (selectedRowIndex + direction + allRows.length) % allRows.length;
+      selectRow(index);
     }
     function keyHandler(ev){
       // Check if destroyed or if overlay no longer exists in DOM
@@ -1581,17 +1639,42 @@ window.addEventListener('storage', function(ev){
       }
 
       if (ev.key === 'Escape'){
-        destroy();
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        if (searchHistoryDropdown.style.display !== 'none') hideSearchHistoryDropdown();
+        else destroy();
       } else if (ev.key === 'ArrowDown'){
         ev.preventDefault();
         moveSelection(1);
       } else if (ev.key === 'ArrowUp'){
         ev.preventDefault();
         moveSelection(-1);
+      } else if (keyboardBrowsing && (ev.key === 'ArrowRight' || ev.key === 'ArrowLeft')) {
+        var descriptor = filtered[selectedRowIndex];
+        if (!descriptor || !descriptor.item.group_id) return;
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        var groupId = descriptor.item.group_id;
+        if (ev.key === 'ArrowRight' && descriptor.kind === 'group') {
+          if (!expandedGroups.has(groupId)) allRows[selectedRowIndex].onclick();
+          else moveSelection(1);
+        } else if (ev.key === 'ArrowLeft') {
+          expandedGroups.delete(groupId);
+          renderList();
+          var groupIndex = filtered.findIndex(function(entry) { return entry.kind === 'group' && entry.item.group_id === groupId; });
+          if (groupIndex >= 0) selectRow(groupIndex);
+        }
       } else if (ev.key === 'Enter'){
         ev.preventDefault();
+        var currentQuery = filter.value.trim();
+        if (filterTimeout || currentQuery !== lastSearchedQuery) {
+          runFilterSearch(true);
+          return;
+        }
         if (selectedRowIndex >= 0 && allRows[selectedRowIndex] && allRows[selectedRowIndex].ondblclick) {
           allRows[selectedRowIndex].ondblclick();
+        } else if (selectedRowIndex >= 0 && allRows[selectedRowIndex]) {
+          allRows[selectedRowIndex].onclick();
         } else {
           moveSelection(1);
         }
@@ -1609,14 +1692,33 @@ window.addEventListener('storage', function(ev){
 
     // Filter input: send search query to server and re-render
     var filterTimeout = null;
-    filter.addEventListener('input', function(){
+    var searchHistorySaveTimeout = null;
+    var lastSearchedQuery = '';
+    function runFilterSearch(commitRecent) {
       clearTimeout(filterTimeout);
-      filterTimeout = setTimeout(function(){
-        var q = filter.value.trim();
-        status.textContent = 'Searching…';
+      filterTimeout = null;
+      var q = filter.value.trim();
+      lastSearchedQuery = q;
+      status.textContent = 'Searching…';
+      if (commitRecent) {
+        clearTimeout(searchHistorySaveTimeout);
+        searchHistorySaveTimeout = null;
+        hideSearchHistoryDropdown();
         if (q) saveSearchHistory(q);
-        reloadPanel();
+      }
+      return reloadPanel();
+    }
+    filter.addEventListener('input', function(){
+      keyboardBrowsing = false;
+      clearTimeout(filterTimeout);
+      clearTimeout(searchHistorySaveTimeout);
+      filterTimeout = setTimeout(function(){
+        runFilterSearch(false);
       }, 250);
+      searchHistorySaveTimeout = setTimeout(function(){
+        var q = filter.value.trim();
+        if (q && q === lastSearchedQuery) saveSearchHistory(q);
+      }, 1500);
     });
 
     filter.addEventListener('keydown', function(ev){
