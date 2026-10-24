@@ -25,6 +25,15 @@ Outputs:
 
 Prompts are saved only after the node runs as part of a workflow. Merely typing or editing text does not create history entries.
 
+In either prompt field, `#` starts a comment that ends at the end of that line:
+
+```text
+a dragon in a forest # try a castle later
+cinematic lighting
+```
+
+The outputs omit comments, while History keeps the original text including comments. Comments are removed before positive inline choices such as `{red|blue}` are expanded. Every `#` starts a comment, including inside a URL or hashtag.
+
 ## Prompt Library
 
 - Keeps every executed prompt without a configured history limit.

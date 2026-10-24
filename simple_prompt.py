@@ -279,6 +279,11 @@ def has_choice_syntax(text: str) -> bool:
     return False
 
 
+def strip_prompt_comments(text: str) -> str:
+    """Remove hash comments from output while preserving active lines."""
+    return re.sub(r"[ \t]*#[^\r\n]*", "", text or "").strip()
+
+
 def expand_choices(text: str, seed: Optional[int] = None) -> str:
     if not text or "{" not in text:
         return text or ""
@@ -818,8 +823,8 @@ class SimplePromptStandalone:
             except Exception:
                 seed = int(time.time() * 1000) & 0xFFFFFFFF
 
-        pos_text = expand_choices(positive_orig, seed=seed)
-        neg_text = negative_raw
+        pos_text = expand_choices(strip_prompt_comments(positive_orig), seed=seed)
+        neg_text = strip_prompt_comments(negative_raw)
 
         session_key = (str(unique_id or ""), str(history_lineage_nonce or ""))
         with _LINEAGE_LOCK:
