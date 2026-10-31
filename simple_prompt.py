@@ -8,6 +8,7 @@ import re
 import shutil
 import threading
 import time
+from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 try:
@@ -465,7 +466,7 @@ def _search_score(query: str, text: str) -> float:
     if not positive_terms:
         return 100.0
 
-    text_words = re.findall(r"\w+", text_folded, flags=re.UNICODE)
+    text_words = None
     term_scores: List[float] = []
     for term, exact_phrase in positive_terms:
         if term in text_folded:
@@ -476,6 +477,8 @@ def _search_score(query: str, text: str) -> float:
         term_words = re.findall(r"\w+", term, flags=re.UNICODE)
         if len(term_words) != 1:
             return 0.0
+        if text_words is None:
+            text_words = re.findall(r"\w+", text_folded, flags=re.UNICODE)
         best_score = max((float(fuzz.ratio(term, word)) for word in text_words), default=0.0)
         threshold = 85.0 if len(term) <= 4 else 80.0
         if best_score < threshold:
@@ -487,12 +490,19 @@ def _search_score(query: str, text: str) -> float:
 def _change_texts(newer: Dict[str, Any], older: Optional[Dict[str, Any]]) -> tuple[str, str]:
     if not older:
         return "", ""
+    return _cached_change_texts(*(str(entry.get(field) or "")
+                                 for entry in (newer, older)
+                                 for field in ("positive", "negative")))
+
+
+@lru_cache(maxsize=4096)
+def _cached_change_texts(new_positive, new_negative, old_positive, old_negative):
 
     added: List[str] = []
     removed: List[str] = []
-    for field in ("positive", "negative"):
-        newer_tokens = re.findall(r"\S+", str(newer.get(field) or ""))
-        older_tokens = re.findall(r"\S+", str(older.get(field) or ""))
+    for newer_text, older_text in ((new_positive, old_positive), (new_negative, old_negative)):
+        newer_tokens = re.findall(r"\S+", newer_text)
+        older_tokens = re.findall(r"\S+", older_text)
         matcher = difflib.SequenceMatcher(None, older_tokens, newer_tokens, autojunk=False)
         for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
             if tag in ("insert", "replace"):
@@ -532,7 +542,7 @@ def _history_list_items(
         scope = str(search_scope or "all").strip().lower()
         if scope not in {"all", "current", "added", "removed"}:
             scope = "all"
-        change_lookup = _history_change_lookup(items)
+        change_lookup = _history_change_lookup(items) if scope in {"added", "removed"} else {}
 
         import time as _t
         months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]

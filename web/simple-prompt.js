@@ -1280,14 +1280,21 @@ window.addEventListener('storage', function(ev){
     matchPrev.onclick = function(){ updatePreviewMatchNav(previewMatchIndex - 1); };
     matchNext.onclick = function(){ updatePreviewMatchNav(previewMatchIndex + 1); };
 
-    function reloadPanel(){
+    var libraryRequest = null;
+    function reloadPanel(refreshLibrary){
       var serial = ++refreshSerial;
       var q = filter.value.trim();
+      var requestedScope = searchScope;
+      if (refreshLibrary !== false || !libraryRequest) {
+        var pendingLibrary = apiList(node);
+        libraryRequest = pendingLibrary;
+        pendingLibrary.catch(function() { if (libraryRequest === pendingLibrary) libraryRequest = null; });
+      }
       var requests = q
-        ? Promise.all([apiList(node), apiList(node, q, searchScope)])
-        : apiList(node).then(function(items){ return [items, items]; });
+        ? Promise.all([libraryRequest, apiList(node, q, requestedScope)])
+        : libraryRequest.then(function(items){ return [items, items]; });
       return requests.then(function(results){
-        if (serial !== refreshSerial) return;
+        if (isDestroyed || serial !== refreshSerial || q !== filter.value.trim() || requestedScope !== searchScope) return;
         libraryItems = Array.isArray(results[0]) ? results[0] : [];
         var nextItems = Array.isArray(results[1]) ? results[1] : [];
         var signature = searchScope + '\u0000' + q + '\u0000' + JSON.stringify(nextItems.map(function(it){
@@ -1706,7 +1713,7 @@ window.addEventListener('storage', function(ev){
         hideSearchHistoryDropdown();
         if (q) saveSearchHistory(q);
       }
-      return reloadPanel();
+      return reloadPanel(false);
     }
     filter.addEventListener('input', function(){
       keyboardBrowsing = false;
