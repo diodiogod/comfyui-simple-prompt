@@ -280,9 +280,38 @@ def has_choice_syntax(text: str) -> bool:
     return False
 
 
+_PROMPT_HASH = re.compile(r"\\#|#")
+_HEX_COLOR = re.compile(r"#[0-9a-fA-F]{8}(?!\w)|#[0-9a-fA-F]{6}(?!\w)|#[0-9a-fA-F]{4}(?!\w)|#[0-9a-fA-F]{3}(?!\w)")
+
+
 def strip_prompt_comments(text: str) -> str:
-    """Remove hash comments from output while preserving active lines."""
-    return re.sub(r"[ \t]*#[^\r\n]*", "", text or "").strip()
+    """Strip line comments, keeping inline hex colors and escaped hashes."""
+    lines = []
+    for line in (text or "").splitlines(keepends=True):
+        ending = "\r\n" if line.endswith("\r\n") else line[-1:] if line.endswith(("\r", "\n")) else ""
+        if line.lstrip(" \t").startswith("#"):
+            lines.append(ending)
+            continue
+
+        parts = []
+        start = 0
+        # Advance past protected hashes before looking for the next comment.
+        while match := _PROMPT_HASH.search(line, start):
+            parts.append(line[start:match.start()])
+            if match.group() == r"\#":
+                parts.append("#")
+                start = match.end()
+            elif color := _HEX_COLOR.match(line, match.start()):
+                parts.append(color.group())
+                start = color.end()
+            else:
+                parts[-1] = parts[-1].rstrip(" \t")
+                parts.append(ending)
+                break
+        else:
+            parts.append(line[start:])
+        lines.append("".join(parts))
+    return "".join(lines).strip()
 
 
 def expand_choices(text: str, seed: Optional[int] = None) -> str:

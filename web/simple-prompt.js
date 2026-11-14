@@ -163,6 +163,7 @@ window.addEventListener('storage', function(ev){
   function setPreview(node, txt, opts){
     try{
       var s = String(txt == null ? '' : txt);
+      var positiveOnly = !!(opts && opts.positiveOnly);
       var force = !!(opts && (opts.force || opts.clear));
       var singleLine = !/\n/.test(s);
       var shortish   = s.trim().length <= 160;
@@ -174,7 +175,7 @@ window.addEventListener('storage', function(ev){
 
       // Normal preview → split into POS / NEG by a line with "---"
       var parts = s.split(/\r?\n?-{3,}\r?\n?/);
-      var pos = (parts[0] || '').trim();
+      var pos = positiveOnly ? s : (parts[0] || '').trim();
       var neg = (parts.length > 1 ? parts.slice(1).join('\n---\n') : '').trim();
 
       function _findWidget(node, name){
@@ -211,7 +212,7 @@ window.addEventListener('storage', function(ev){
       }
 
       if (wPos) _apply(wPos, pos);
-      if (wNeg) _apply(wNeg, neg);
+      if (wNeg && !positiveOnly) _apply(wNeg, neg);
 
       try {
         var g = (window.app && window.app.graph) || null;
@@ -537,7 +538,7 @@ window.addEventListener('storage', function(ev){
       // ===== Footer / Button =====
       '.pg-hist-footer{padding:10px 12px;border-top:1px solid var(--pg-hist-border);}',
       '.pg-hist-btn-row{display:flex;gap:8px;margin-bottom:8px;}',
-      '.pg-hist-btn-row .pg-hist-btn{flex:1;width:auto;}',
+      '.pg-hist-btn-row .pg-hist-btn{flex:1;min-width:0;width:auto;}',
       '.pg-hist-btn{display:block;width:100%;padding:6px 10px;border:1px solid var(--pg-hist-border);',
       '  background:var(--pg-hist-input-bg);color:var(--pg-hist-text);border-radius:8px;cursor:pointer;}',
       '.pg-hist-btn:hover{filter:brightness(1.06);}',
@@ -1141,9 +1142,23 @@ window.addEventListener('storage', function(ev){
       });
     };
 
+    var applyBtn = document.createElement('button');
+    applyBtn.className = 'pg-hist-btn';
+    applyBtn.textContent = 'Apply Positive Prompt';
+    applyBtn.title = 'Replace the positive prompt and keep the current negative prompt';
+    applyBtn.disabled = true;
+    applyBtn.style.opacity = '0.5';
+    applyBtn.onclick = function(){
+      if (!selectedItem) return;
+      setLineage(node, selectedItem);
+      setPreview(node, String(selectedItem.positive || ''), { force: true, positiveOnly: true });
+      destroy();
+    };
+
     var copyBtn = document.createElement('button');
     copyBtn.className = 'pg-hist-btn';
     copyBtn.textContent = 'Copy Positive Prompt';
+    copyBtn.title = 'Copy the saved positive prompt to the clipboard';
     copyBtn.disabled = true;
     copyBtn.style.opacity = '0.5';
 
@@ -1171,14 +1186,12 @@ window.addEventListener('storage', function(ev){
 
     copyBtn.onclick = function(){
       if (!selectedItem) return;
-      var positive = String(selectedItem.positive || '');
-      copyText(positive).then(function(){
+      copyText(String(selectedItem.positive || '')).then(function(){
         copyBtn.textContent = 'Copied Positive Prompt';
-        setTimeout(function(){
-          if (copyBtn) copyBtn.textContent = 'Copy Positive Prompt';
-        }, 1200);
+        setTimeout(function(){ copyBtn.textContent = 'Copy Positive Prompt'; }, 1200);
       }).catch(function(error){
         status.textContent = 'Copy failed: ' + ((error && error.message) || String(error));
+        status.style.display = 'block';
       });
     };
 
@@ -1229,7 +1242,7 @@ window.addEventListener('storage', function(ev){
     };
 
     var copyActions = document.createElement('div'); copyActions.className = 'pg-hist-btn-row';
-    copyActions.appendChild(copyBtn); copyActions.appendChild(copySelectionBtn);
+    copyActions.appendChild(applyBtn); copyActions.appendChild(copyBtn); copyActions.appendChild(copySelectionBtn);
     footer.appendChild(useBtn);
     footer.appendChild(copyActions);
     footer.appendChild(noneBtn);
@@ -1361,6 +1374,8 @@ window.addEventListener('storage', function(ev){
       useBtn.style.opacity = '0.5';
       copyBtn.disabled = true;
       copyBtn.style.opacity = '0.5';
+      applyBtn.disabled = true;
+      applyBtn.style.opacity = '0.5';
       lastCleanSelection = '';
       copySelectionBtn.disabled = true;
       copySelectionBtn.style.opacity = '0.5';
@@ -1428,7 +1443,7 @@ window.addEventListener('storage', function(ev){
         if (!preventScroll) row.scrollIntoView({ block: 'nearest' });
         if (descriptor.kind === 'group' || descriptor.kind === 'reveal') {
           selectedItem = null;
-          useBtn.disabled = copyBtn.disabled = copySelectionBtn.disabled = true;
+          useBtn.disabled = applyBtn.disabled = copyBtn.disabled = copySelectionBtn.disabled = true;
           preview.style.display = divider.style.display = 'none';
           return;
         }
@@ -1437,6 +1452,8 @@ window.addEventListener('storage', function(ev){
         useBtn.style.opacity = '1';
         copyBtn.disabled = false;
         copyBtn.style.opacity = '1';
+        applyBtn.disabled = false;
+        applyBtn.style.opacity = '1';
         lastCleanSelection = '';
         copySelectionBtn.disabled = true;
         copySelectionBtn.style.opacity = '0.5';

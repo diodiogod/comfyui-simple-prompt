@@ -32,7 +32,12 @@ a dragon in a forest # try a castle later
 cinematic lighting
 ```
 
-The outputs omit comments, while History keeps the original text including comments. Comments are removed before positive inline choices such as `{red|blue}` are expanded. Every `#` starts a comment, including inside a URL or hashtag.
+The outputs omit comments, while History keeps the original text including comments. Comments are removed before positive inline choices such as `{red|blue}` are expanded.
+
+- A line starting with `#` (after optional spaces) is fully commented out.
+- Inline hex colors such as `(#000000)`, `#FFF`, or `#FFFFFF` pass through unchanged (3, 4, 6, or 8 hex digits).
+- Use `\#` for any other literal hash, including hashtags and URL fragments. The output contains `#` without the backslash.
+- Any other unescaped `#` ignores the remainder of that line.
 
 ## Prompt Library
 
@@ -46,7 +51,7 @@ The outputs omit comments, while History keeps the original text including comme
 - Groups consecutive prompt experiments into expandable variation groups.
 - Uses ordered, content-weighted comparison to separate substantial rewrites and marks them as a new direction.
 - Allows a grouped variation to be removed from its group without deleting it.
-- Copies either the complete positive prompt or a clean selection from the change preview.
+- Applies or copies a saved positive prompt, or copies a clean selection from the change preview. Applying only the positive preserves the current negative prompt.
 - Displays prompt count, last-save time, and backup health in History.
 - Exports the complete library and imports it with additive, duplicate-safe merging.
 
